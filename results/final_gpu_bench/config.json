@@ -1,0 +1,21 @@
+{
+  "device": "cuda",
+  "out": "results/final_gpu_bench",
+  "seed": 7,
+  "steps": 120,
+  "batch": 192,
+  "eval_batch": 256,
+  "seq_len": 64,
+  "vocab": 96,
+  "dim": 64,
+  "depth": 2,
+  "branches": 12,
+  "rank": 12,
+  "mem_dim": 64,
+  "lr": 0.002,
+  "weight_decay": 0.0001,
+  "log_every": 30,
+  "order_pairs": 4,
+  "tasks": "mode_select,order_compare,kv_recall4",
+  "models": "mean_pool,adfc3,adfc6"
+}

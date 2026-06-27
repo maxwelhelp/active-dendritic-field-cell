@@ -1,0 +1,4 @@
+task,winner,winner_acc,adfc6_acc,best_non_adfc3,non_adfc3_acc,adfc6_margin
+mode_select,adfc3,1.0,1.0,adfc6,1.0,0.0
+order_compare,adfc6,0.6748046875,0.6748046875,adfc6,0.6748046875,0.0
+kv_recall4,adfc3,1.0,1.0,adfc6,1.0,0.0

@@ -1,0 +1,2 @@
+task,winner,winner_acc,adfc6_acc,best_non_adfc3,non_adfc3_acc,adfc6_margin
+order_compare,adfc6,0.99853515625,0.99853515625,adfc6,0.99853515625,0.0

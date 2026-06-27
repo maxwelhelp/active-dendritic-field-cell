@@ -1,0 +1,21 @@
+{
+  "device": "cuda",
+  "out": "runs/v6_order",
+  "seed": 7,
+  "steps": 180,
+  "batch": 256,
+  "eval_batch": 512,
+  "seq_len": 64,
+  "vocab": 96,
+  "dim": 64,
+  "depth": 2,
+  "branches": 12,
+  "rank": 12,
+  "mem_dim": 64,
+  "lr": 0.002,
+  "weight_decay": 0.0001,
+  "log_every": 30,
+  "order_pairs": 4,
+  "tasks": "order_compare",
+  "models": "mean_pool,adfc3,adfc6"
+}
