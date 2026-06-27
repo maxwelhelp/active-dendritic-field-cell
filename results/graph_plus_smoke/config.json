@@ -1,0 +1,19 @@
+{
+  "out": "results/graph_plus_smoke",
+  "seed": 7,
+  "steps": 40,
+  "batch": 128,
+  "eval_batch": 192,
+  "seq_len": 48,
+  "fdim": 16,
+  "nodes": 48,
+  "dim": 48,
+  "sensor_nodes": 16,
+  "motor_nodes": 4,
+  "degree": 6,
+  "lr": 0.002,
+  "weight_decay": 0.0001,
+  "log_every": 20,
+  "tasks": "order,kv",
+  "variants": "none,learned_sparse,learned_sparse_ops"
+}

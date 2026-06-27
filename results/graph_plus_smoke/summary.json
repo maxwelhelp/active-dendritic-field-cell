@@ -1,0 +1,118 @@
+{
+  "finals": [
+    {
+      "task": "order",
+      "variant": "none",
+      "step": 40,
+      "train_loss": 0.685549795627594,
+      "val_loss": 0.7105216234922409,
+      "val_acc": 0.4921875,
+      "best_val_acc": 0.5052083333333334,
+      "best_step": 1,
+      "params": 19971,
+      "grad_norm": 0.9931862354278564,
+      "sec": 8.214462280273438,
+      "edge_density": 0.0,
+      "edge_entropy": 0.0
+    },
+    {
+      "task": "order",
+      "variant": "learned_sparse",
+      "step": 40,
+      "train_loss": 0.6937881112098694,
+      "val_loss": 0.6991692930459976,
+      "val_acc": 0.453125,
+      "best_val_acc": 0.5065104166666666,
+      "best_step": 20,
+      "params": 22275,
+      "grad_norm": 0.45870712399482727,
+      "sec": 8.337347745895386,
+      "edge_density": 0.1857638955116272,
+      "edge_entropy": 0.5489045977592468
+    },
+    {
+      "task": "order",
+      "variant": "learned_sparse_ops",
+      "step": 40,
+      "train_loss": 0.7065871357917786,
+      "val_loss": 0.6934531778097153,
+      "val_acc": 0.51171875,
+      "best_val_acc": 0.5234375,
+      "best_step": 1,
+      "params": 27886,
+      "grad_norm": 1.8594907522201538,
+      "sec": 8.528047800064087,
+      "edge_density": 0.1857638955116272,
+      "edge_entropy": 0.5489040017127991,
+      "order_abs": 0.003536087227985263,
+      "order_gate": 0.4969559907913208,
+      "key_entropy": 0.9999887943267822,
+      "ops_scale": 0.7512727975845337
+    },
+    {
+      "task": "kv",
+      "variant": "none",
+      "step": 40,
+      "train_loss": 0.7331296801567078,
+      "val_loss": 0.7077088803052902,
+      "val_acc": 0.4908854166666667,
+      "best_val_acc": 0.5,
+      "best_step": 20,
+      "params": 19971,
+      "grad_norm": 3.285274028778076,
+      "sec": 7.7780067920684814,
+      "edge_density": 0.0,
+      "edge_entropy": 0.0
+    },
+    {
+      "task": "kv",
+      "variant": "learned_sparse",
+      "step": 40,
+      "train_loss": 0.7049260139465332,
+      "val_loss": 0.7101437449455261,
+      "val_acc": 0.5286458333333334,
+      "best_val_acc": 0.5286458333333334,
+      "best_step": 40,
+      "params": 22275,
+      "grad_norm": 1.6420280933380127,
+      "sec": 8.300979137420654,
+      "edge_density": 0.1857638955116272,
+      "edge_entropy": 0.5488989353179932
+    },
+    {
+      "task": "kv",
+      "variant": "learned_sparse_ops",
+      "step": 40,
+      "train_loss": 0.6737378239631653,
+      "val_loss": 0.6679423600435257,
+      "val_acc": 0.6966145833333334,
+      "best_val_acc": 0.6966145833333334,
+      "best_step": 40,
+      "params": 27886,
+      "grad_norm": 1.313624382019043,
+      "sec": 8.692863702774048,
+      "edge_density": 0.1857638955116272,
+      "edge_entropy": 0.5489010810852051,
+      "order_abs": 0.0020174412056803703,
+      "order_gate": 0.49601832032203674,
+      "key_entropy": 0.9997095465660095,
+      "ops_scale": 0.7711280584335327
+    }
+  ],
+  "winners": [
+    {
+      "task": "order",
+      "winner": "learned_sparse_ops",
+      "winner_acc": 0.5234375,
+      "none_acc": 0.5052083333333334,
+      "margin_vs_none": 0.01822916666666663
+    },
+    {
+      "task": "kv",
+      "winner": "learned_sparse_ops",
+      "winner_acc": 0.6966145833333334,
+      "none_acc": 0.5,
+      "margin_vs_none": 0.19661458333333337
+    }
+  ]
+}

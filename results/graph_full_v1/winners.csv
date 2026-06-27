@@ -1,0 +1,4 @@
+task,winner,winner_acc,none_acc,winner_margin_vs_none
+route,fixed_random,0.7822265625,0.5087890625,0.2734375
+order,none,0.517578125,0.517578125,0.0
+kv,learned_sparse,0.6796875,0.5302734375,0.1494140625
