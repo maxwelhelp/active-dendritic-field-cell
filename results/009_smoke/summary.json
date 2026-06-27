@@ -1,0 +1,57 @@
+{
+  "finals": [
+    {
+      "task": "mixed",
+      "model": "metabolic",
+      "step": 3,
+      "train_loss": 0.858069121837616,
+      "train_ce": 0.7840282320976257,
+      "expected_cost": 0.34281110763549805,
+      "target_loss": 0.09757760167121887,
+      "metabolic_loss": 0.0632815808057785,
+      "val_loss": 0.7045625746250153,
+      "val_acc": 0.4921875,
+      "best_val_acc": 0.53125,
+      "best_step": 2,
+      "params": 61325,
+      "grad_norm": 2.447065591812134,
+      "sec": 1.592010259628296,
+      "w_graph": 0.23902273178100586,
+      "w_order": 0.3851977288722992,
+      "w_key": 0.37577950954437256,
+      "router_entropy": 0.9681629538536072,
+      "order_abs": 0.38159382343292236,
+      "key_entropy": 0.9999688267707825,
+      "survive_graph": 0.7848296761512756,
+      "survive_order": 0.7858119010925293,
+      "survive_key": 0.7848600745201111,
+      "channel_alive_cost": 0.7853159308433533,
+      "edge_proxy_cost": 0.49960944056510925,
+      "activity_proxy": 0.5759390592575073,
+      "homeo_loss": 0.24595557153224945,
+      "acc_route": 0.453125,
+      "w_graph_route": 0.1976419985294342,
+      "w_order_route": 0.47140392661094666,
+      "w_key_route": 0.33095410466194153,
+      "acc_order": 0.484375,
+      "w_graph_order": 0.30539798736572266,
+      "w_order_order": 0.3798898160457611,
+      "w_key_order": 0.31471216678619385,
+      "acc_kv": 0.484375,
+      "w_graph_kv": 0.25355255603790283,
+      "w_order_kv": 0.35042911767959595,
+      "w_key_kv": 0.39601829648017883,
+      "acc_program": 0.546875,
+      "w_graph_program": 0.19899888336658478,
+      "w_order_program": 0.33942028880119324,
+      "w_key_program": 0.4615808129310608
+    }
+  ],
+  "winners": [
+    {
+      "task": "mixed",
+      "winner": "metabolic",
+      "winner_acc": 0.53125
+    }
+  ]
+}
