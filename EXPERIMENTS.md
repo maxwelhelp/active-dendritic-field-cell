@@ -14,7 +14,7 @@
 | 008 | [Budgeted top-k router](experiments/008_budgeted_topk_router.md) | top-k routing + channel dropout + target usage | code + smoke ready; full one-command check pending |
 | 009 | [Metabolic structural plasticity](experiments/009_metabolic_structural_plasticity.md) | survival gates + metabolic cost proxies | metabolic nearly matches always_typed with lower expected cost; hard metabolic hurts order |
 | 010 | [Utility structural plasticity](experiments/010_utility_structural_plasticity.md) | edge utility EMA + reward/decay + birth/prune | code + one-command runner ready; full check pending |
-| 011 | [Task-MoE specialization](experiments/011_task_moe_specialization.md) | task probabilities + task-conditioned graph subgates | code + smoke ready; one-command full check pending |
+| 011 | [Task-MoE specialization](experiments/011_task_moe_specialization.md) | task probabilities + task-conditioned graph subgates | task_moe peak 96.78%; clear task/channel specialization |
 
 ## Current conclusion
 

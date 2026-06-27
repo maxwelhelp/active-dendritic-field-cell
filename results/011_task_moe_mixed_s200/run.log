@@ -1,0 +1,20 @@
+=== 011 Task-MoE Utility GraphADFC ===
+gpu Tesla P40 torch 2.6.0+cu124
+
+--- TASK mixed ---
+[mixed] always_typed     0001/200 val= 51.95% best= 51.95% tg=0.00/0.00/0.00/0.00 wg=0.33 wo=0.33 wk=0.33 route=49.6 order=51.6 kv=51.6 program=55.1
+[mixed] always_typed     0040/200 val= 87.30% best= 87.30% tg=0.00/0.00/0.00/0.00 wg=0.30 wo=0.35 wk=0.35 route=93.4 order=97.7 kv=82.0 program=76.2
+[mixed] always_typed     0080/200 val= 91.31% best= 91.31% tg=0.00/0.00/0.00/0.00 wg=0.28 wo=0.36 wk=0.36 route=98.8 order=98.8 kv=91.0 program=76.6
+[mixed] always_typed     0120/200 val= 93.85% best= 93.85% tg=0.00/0.00/0.00/0.00 wg=0.27 wo=0.37 wk=0.36 route=99.6 order=100.0 kv=99.6 program=76.2
+[mixed] always_typed     0160/200 val= 95.12% best= 95.12% tg=0.00/0.00/0.00/0.00 wg=0.26 wo=0.38 wk=0.37 route=100.0 order=100.0 kv=100.0 program=80.5
+[mixed] always_typed     0200/200 val= 94.82% best= 95.12% tg=0.00/0.00/0.00/0.00 wg=0.25 wo=0.38 wk=0.37 route=100.0 order=100.0 kv=100.0 program=79.3
+[mixed] task_moe_utility 0001/200 val= 50.98% best= 50.98% tg=0.27/0.24/0.31/0.19 wg=0.24 wo=0.37 wk=0.39 route=53.9 order=50.8 kv=52.3 program=46.9
+[mixed] task_moe_utility 0040/200 val= 85.16% best= 85.16% tg=0.02/0.34/0.30/0.34 wg=0.07 wo=0.50 wk=0.43 route=97.3 order=97.7 kv=75.0 program=70.7
+[mixed] task_moe_utility 0080/200 val= 90.92% best= 90.92% tg=0.02/0.42/0.29/0.28 wg=0.06 wo=0.55 wk=0.39 route=99.6 order=99.6 kv=91.4 program=73.0
+[mixed] task_moe_utility 0120/200 val= 95.12% best= 95.12% tg=0.01/0.41/0.31/0.27 wg=0.06 wo=0.54 wk=0.41 route=99.6 order=100.0 kv=99.6 program=81.2
+[mixed] task_moe_utility 0160/200 val= 96.78% best= 96.78% tg=0.10/0.38/0.26/0.25 wg=0.12 wo=0.51 wk=0.37 route=99.6 order=99.6 kv=99.6 program=88.3
+[mixed] task_moe_utility 0200/200 val= 94.53% best= 96.78% tg=0.12/0.39/0.26/0.24 wg=0.13 wo=0.51 wk=0.36 route=100.0 order=99.6 kv=100.0 program=78.5
+
+=== WINNERS ===
+mixed winner=task_moe_utility acc=96.78%
+DONE /home/maxwelhelp/test/sience/experiments/math_search/WORKING_BEST/active-dendritic-field-cell-repo/results/011_task_moe_mixed_s200
