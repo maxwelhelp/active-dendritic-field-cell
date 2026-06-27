@@ -1,0 +1,36 @@
+=== 009 Metabolic GraphADFC compact ===
+gpu Tesla P40 torch 2.6.0+cu124
+
+--- TASK mixed ---
+[mixed] always_typed    0001/240 val= 51.95% best= 51.95% cost=0.000 met=0.000 wg=0.33 wo=0.33 wk=0.33 route=49.6 order=51.6 kv=51.6 program=55.1
+[mixed] always_typed    0040/240 val= 87.30% best= 87.30% cost=0.000 met=0.000 wg=0.30 wo=0.35 wk=0.35 route=93.4 order=97.7 kv=82.0 program=76.2
+[mixed] always_typed    0080/240 val= 91.31% best= 91.31% cost=0.000 met=0.000 wg=0.28 wo=0.36 wk=0.36 route=98.8 order=98.8 kv=91.0 program=76.6
+[mixed] always_typed    0120/240 val= 93.85% best= 93.85% cost=0.000 met=0.000 wg=0.27 wo=0.37 wk=0.36 route=99.6 order=100.0 kv=99.6 program=76.2
+[mixed] always_typed    0160/240 val= 95.12% best= 95.12% cost=0.000 met=0.000 wg=0.26 wo=0.38 wk=0.37 route=100.0 order=100.0 kv=100.0 program=80.5
+[mixed] always_typed    0200/240 val= 94.82% best= 95.12% cost=0.000 met=0.000 wg=0.25 wo=0.38 wk=0.37 route=100.0 order=100.0 kv=100.0 program=79.3
+[mixed] always_typed    0240/240 val= 95.80% best= 95.80% cost=0.000 met=0.000 wg=0.25 wo=0.38 wk=0.37 route=100.0 order=100.0 kv=100.0 program=83.2
+[mixed] cost_router     0001/240 val= 47.95% best= 47.95% cost=0.298 met=0.000 wg=0.33 wo=0.30 wk=0.37 route=48.0 order=51.2 kv=48.4 program=44.1
+[mixed] cost_router     0040/240 val= 86.82% best= 86.82% cost=0.408 met=0.000 wg=0.06 wo=0.38 wk=0.56 route=98.8 order=99.2 kv=80.1 program=69.1
+[mixed] cost_router     0080/240 val= 91.31% best= 91.31% cost=0.412 met=0.000 wg=0.07 wo=0.42 wk=0.50 route=100.0 order=99.6 kv=89.1 program=76.6
+[mixed] cost_router     0120/240 val= 95.80% best= 95.80% cost=0.429 met=0.000 wg=0.07 wo=0.51 wk=0.42 route=100.0 order=99.2 kv=98.8 program=85.2
+[mixed] cost_router     0160/240 val= 94.24% best= 95.80% cost=0.414 met=0.000 wg=0.13 wo=0.51 wk=0.36 route=100.0 order=99.6 kv=99.6 program=77.7
+[mixed] cost_router     0200/240 val= 95.12% best= 95.80% cost=0.403 met=0.000 wg=0.13 wo=0.47 wk=0.40 route=100.0 order=100.0 kv=100.0 program=80.5
+[mixed] cost_router     0240/240 val= 94.82% best= 95.80% cost=0.407 met=0.000 wg=0.13 wo=0.46 wk=0.41 route=100.0 order=100.0 kv=100.0 program=79.3
+[mixed] metabolic       0001/240 val= 50.59% best= 50.59% cost=0.349 met=0.063 wg=0.26 wo=0.38 wk=0.36 route=50.4 order=49.2 kv=53.9 program=48.8
+[mixed] metabolic       0040/240 val= 85.45% best= 85.45% cost=0.415 met=0.062 wg=0.03 wo=0.38 wk=0.59 route=98.0 order=98.8 kv=76.6 program=68.4
+[mixed] metabolic       0080/240 val= 89.65% best= 89.65% cost=0.424 met=0.061 wg=0.03 wo=0.41 wk=0.56 route=98.8 order=99.2 kv=84.4 program=76.2
+[mixed] metabolic       0120/240 val= 93.75% best= 93.75% cost=0.443 met=0.059 wg=0.03 wo=0.50 wk=0.47 route=99.6 order=100.0 kv=95.7 program=79.7
+[mixed] metabolic       0160/240 val= 94.73% best= 94.73% cost=0.425 met=0.058 wg=0.05 wo=0.49 wk=0.46 route=100.0 order=100.0 kv=100.0 program=78.9
+[mixed] metabolic       0200/240 val= 93.75% best= 94.73% cost=0.418 met=0.057 wg=0.10 wo=0.49 wk=0.41 route=100.0 order=99.6 kv=100.0 program=75.4
+[mixed] metabolic       0240/240 val= 95.51% best= 95.51% cost=0.398 met=0.055 wg=0.13 wo=0.43 wk=0.44 route=100.0 order=100.0 kv=100.0 program=82.0
+[mixed] metabolic_hard  0001/240 val= 59.57% best= 59.57% cost=0.550 met=0.063 wg=0.25 wo=0.40 wk=0.35 route=70.3 order=50.4 kv=61.7 program=55.9
+[mixed] metabolic_hard  0040/240 val= 73.24% best= 73.24% cost=0.360 met=0.062 wg=0.24 wo=0.24 wk=0.52 route=84.8 order=69.5 kv=70.3 program=68.4
+[mixed] metabolic_hard  0080/240 val= 79.79% best= 79.79% cost=0.404 met=0.060 wg=0.14 wo=0.28 wk=0.58 route=98.8 order=75.4 kv=78.9 program=66.0
+[mixed] metabolic_hard  0120/240 val= 84.86% best= 84.86% cost=0.403 met=0.058 wg=0.13 wo=0.23 wk=0.63 route=100.0 order=73.4 kv=90.6 program=75.4
+[mixed] metabolic_hard  0160/240 val= 87.40% best= 87.40% cost=0.327 met=0.057 wg=0.16 wo=0.29 wk=0.54 route=99.6 order=73.8 kv=97.7 program=78.5
+[mixed] metabolic_hard  0200/240 val= 88.18% best= 88.18% cost=0.404 met=0.055 wg=0.17 wo=0.28 wk=0.55 route=100.0 order=75.8 kv=100.0 program=77.0
+[mixed] metabolic_hard  0240/240 val= 87.70% best= 88.18% cost=0.386 met=0.053 wg=0.19 wo=0.18 wk=0.63 route=99.6 order=71.5 kv=100.0 program=79.7
+
+=== WINNERS ===
+mixed winner=always_typed acc=95.80%
+DONE /home/maxwelhelp/test/sience/experiments/math_search/WORKING_BEST/active-dendritic-field-cell-repo/results/009_metabolic_mixed_s240

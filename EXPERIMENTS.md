@@ -12,7 +12,7 @@
 | 006 | [Edge-type router](experiments/006_edge_type_router.md) | learned per-sample routing over graph/order/key | router 99.61% mixed, selective but ignores graph |
 | 007 | [Cost-aware router + program task](experiments/007_cost_aware_router_program.md) | compositional program task + channel cost | cost-router trades accuracy for lower expected cost |
 | 008 | [Budgeted top-k router](experiments/008_budgeted_topk_router.md) | top-k routing + channel dropout + target usage | code + smoke ready; full one-command check pending |
-| 009 | [Metabolic structural plasticity](experiments/009_metabolic_structural_plasticity.md) | survival gates + metabolic cost proxies | code + smoke ready; full one-command check pending |
+| 009 | [Metabolic structural plasticity](experiments/009_metabolic_structural_plasticity.md) | survival gates + metabolic cost proxies | metabolic nearly matches always_typed with lower expected cost; hard metabolic hurts order |
 
 ## Current conclusion
 
