@@ -1,0 +1,51 @@
+{
+  "finals": [
+    {
+      "task": "mixed",
+      "model": "budget_topk",
+      "step": 3,
+      "train_loss": 0.7803791761398315,
+      "train_ce": 0.760342538356781,
+      "expected_cost": 0.3911839425563812,
+      "entropy_loss": 0.5653204321861267,
+      "target_loss": 0.11495920270681381,
+      "global_usage_loss": 0.004738645628094673,
+      "val_loss": 0.703531488776207,
+      "val_acc": 0.4609375,
+      "best_val_acc": 0.484375,
+      "best_step": 1,
+      "params": 61322,
+      "grad_norm": 0.7231513857841492,
+      "sec": 1.7121832370758057,
+      "w_graph": 0.05738072097301483,
+      "w_order": 0.4838962256908417,
+      "w_key": 0.4587230682373047,
+      "router_entropy": 0.6136151552200317,
+      "order_abs": 0.38230520486831665,
+      "key_entropy": 0.9999672174453735,
+      "acc_route": 0.296875,
+      "w_graph_route": 0.0,
+      "w_order_route": 0.5981406569480896,
+      "w_key_route": 0.4018594026565552,
+      "acc_order": 0.46875,
+      "w_graph_order": 0.22925886511802673,
+      "w_order_order": 0.551101803779602,
+      "w_key_order": 0.21963933110237122,
+      "acc_kv": 0.515625,
+      "w_graph_kv": 0.0,
+      "w_order_kv": 0.41951626539230347,
+      "w_key_kv": 0.5804837942123413,
+      "acc_program": 0.5625,
+      "w_graph_program": 0.010911599732935429,
+      "w_order_program": 0.3605300784111023,
+      "w_key_program": 0.6285583972930908
+    }
+  ],
+  "winners": [
+    {
+      "task": "mixed",
+      "winner": "budget_topk",
+      "winner_acc": 0.484375
+    }
+  ]
+}

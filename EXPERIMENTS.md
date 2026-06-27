@@ -11,6 +11,7 @@
 | 005 | [Graph TypedBank](experiments/005_graph_typed_bank.md) | pairwise relation bank + key read | route/order/kv ≈ 100% |
 | 006 | [Edge-type router](experiments/006_edge_type_router.md) | learned per-sample routing over graph/order/key | router 99.61% mixed, selective but ignores graph |
 | 007 | [Cost-aware router + program task](experiments/007_cost_aware_router_program.md) | compositional program task + channel cost | cost-router trades accuracy for lower expected cost |
+| 008 | [Budgeted top-k router](experiments/008_budgeted_topk_router.md) | top-k routing + channel dropout + target usage | code + smoke ready; full one-command check pending |
 
 ## Current conclusion
 
@@ -21,6 +22,7 @@ topology matters
 edge/operator types matter most for relation tasks
 routing over edge types works, but needs cost/budget to prefer cheap graph channels
 cost-aware routing creates accuracy/cost tradeoff on compositional program task
+budgeted top-k routing adds anti-collapse pressure and target channel specialization
 ```
 
 ## Current best file
