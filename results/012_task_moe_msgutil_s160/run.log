@@ -1,0 +1,18 @@
+=== 012 Task-MoE Message-Utility GraphADFC ===
+gpu Tesla P40 torch 2.6.0+cu124
+
+--- TASK mixed ---
+[mixed] always_typed     0001/160 val= 51.95% best= 51.95% tg=0.00/0.00/0.00/0.00 wg=0.33 wo=0.33 wk=0.33 route=49.6 order=51.6 kv=51.6 program=55.1
+[mixed] always_typed     0040/160 val= 87.30% best= 87.30% tg=0.00/0.00/0.00/0.00 wg=0.30 wo=0.35 wk=0.35 route=93.4 order=97.7 kv=82.0 program=76.2
+[mixed] always_typed     0080/160 val= 91.31% best= 91.31% tg=0.00/0.00/0.00/0.00 wg=0.28 wo=0.36 wk=0.36 route=98.8 order=98.8 kv=91.0 program=76.6
+[mixed] always_typed     0120/160 val= 93.85% best= 93.85% tg=0.00/0.00/0.00/0.00 wg=0.27 wo=0.37 wk=0.36 route=99.6 order=100.0 kv=99.6 program=76.2
+[mixed] always_typed     0160/160 val= 95.12% best= 95.12% tg=0.00/0.00/0.00/0.00 wg=0.26 wo=0.38 wk=0.37 route=100.0 order=100.0 kv=100.0 program=80.5
+[mixed] task_moe_msgutil 0001/160 val= 51.46% best= 51.46% tg=0.26/0.25/0.30/0.18 wg=0.23 wo=0.38 wk=0.38 route=48.4 order=52.0 kv=52.0 program=53.5
+[mixed] task_moe_msgutil 0040/160 val= 84.18% best= 84.18% tg=0.03/0.29/0.34/0.34 wg=0.07 wo=0.47 wk=0.46 route=95.3 order=98.4 kv=77.3 program=65.6
+[mixed] task_moe_msgutil 0080/160 val= 90.14% best= 90.14% tg=0.02/0.40/0.32/0.26 wg=0.06 wo=0.53 wk=0.41 route=99.2 order=99.2 kv=86.3 program=75.8
+[mixed] task_moe_msgutil 0120/160 val= 94.34% best= 94.34% tg=0.01/0.44/0.29/0.26 wg=0.06 wo=0.56 wk=0.39 route=100.0 order=99.6 kv=98.0 program=79.7
+[mixed] task_moe_msgutil 0160/160 val= 95.80% best= 95.80% tg=0.02/0.42/0.30/0.26 wg=0.07 wo=0.54 wk=0.39 route=100.0 order=100.0 kv=100.0 program=83.2
+
+=== WINNERS ===
+mixed winner=task_moe_msgutil acc=95.80%
+DONE /home/maxwelhelp/test/sience/experiments/math_search/WORKING_BEST/active-dendritic-field-cell-repo/results/012_task_moe_msgutil_s160
