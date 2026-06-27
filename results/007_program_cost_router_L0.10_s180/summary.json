@@ -1,0 +1,61 @@
+{
+  "finals": [
+    {
+      "task": "program",
+      "model": "always_typed",
+      "step": 180,
+      "train_loss": 0.38455429673194885,
+      "train_ce": 0.38455429673194885,
+      "expected_cost": 0.0,
+      "entropy_loss": 0.0,
+      "val_loss": 0.35573824495077133,
+      "val_acc": 0.81640625,
+      "best_val_acc": 0.81640625,
+      "best_step": 180,
+      "params": 57066,
+      "grad_norm": 0.6161271333694458,
+      "sec": 43.15700101852417,
+      "w_graph": 0.288979709148407,
+      "w_order": 0.3380219638347626,
+      "w_key": 0.37299829721450806,
+      "router_entropy": 1.0,
+      "acc_program": 0.81640625,
+      "w_graph_program": 0.288979709148407,
+      "w_order_program": 0.3380219638347626,
+      "w_key_program": 0.37299829721450806
+    },
+    {
+      "task": "program",
+      "model": "cost_router",
+      "step": 180,
+      "train_loss": 0.39879199862480164,
+      "train_ce": 0.3637568950653076,
+      "expected_cost": 0.3499515652656555,
+      "entropy_loss": 0.003994285594671965,
+      "val_loss": 0.42576780170202255,
+      "val_acc": 0.80078125,
+      "best_val_acc": 0.80078125,
+      "best_step": 180,
+      "params": 61322,
+      "grad_norm": 0.2426064908504486,
+      "sec": 43.45650124549866,
+      "w_graph": 0.00028809596551582217,
+      "w_order": 0.00018372145132161677,
+      "w_key": 0.999528169631958,
+      "router_entropy": 0.003975437022745609,
+      "order_abs": 0.40692177414894104,
+      "key_entropy": 0.9914655089378357,
+      "acc_program": 0.80078125,
+      "w_graph_program": 0.0002846874704118818,
+      "w_order_program": 0.00018179643666371703,
+      "w_key_program": 0.999533474445343
+    }
+  ],
+  "winners": [
+    {
+      "task": "program",
+      "winner": "always_typed",
+      "winner_acc": 0.81640625
+    }
+  ]
+}
