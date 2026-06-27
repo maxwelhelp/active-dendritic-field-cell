@@ -199,3 +199,118 @@ Expected behavior:
 | `kv` | graph + keyed read |
 | `order` | pairwise directional relation bank |
 
+
+---
+
+## Experiment 3: TypedBank relation operators
+
+File:
+
+```text
+adfc/graph_adfc_worm_typed_bank.py
+```
+
+This version replaces the weak learned order detector with a stronger general relation bank:
+
+```text
+PairwiseOrderBank:
+  for every sensory channel pair (i, j):
+      i_before_j - j_before_i
+```
+
+It also keeps:
+
+```text
+KeyReadBank:
+  query-conditioned read over shifted values
+```
+
+Command:
+
+```bash
+python -u adfc/graph_adfc_worm_typed_bank.py \
+  --out results/graph_typed_bank_full \
+  --steps 100 \
+  --batch 192 \
+  --eval-batch 256 \
+  --tasks route,order,kv \
+  --variants none,learned_sparse,learned_sparse_typed \
+  --log-every 25
+```
+
+### Full results
+
+| Task | none | learned_sparse | learned_sparse_typed | Winner |
+|---|---:|---:|---:|---|
+| `route` | 51.86% | 76.07% | **100.00%** | learned_sparse_typed |
+| `order` | 51.86% | 52.54% | **99.90%** | learned_sparse_typed |
+| `kv` | 51.07% | 66.60% | **99.90%** | learned_sparse_typed |
+
+### What changed
+
+Previous typed attempt:
+
+```text
+learned DirectionalOrderChannel
+order_abs ≈ 0.004
+order acc ≈ 52.34%
+```
+
+New typed bank:
+
+```text
+PairwiseOrderBank
+order_abs ≈ 0.30
+order acc ≈ 99.90%
+```
+
+So the failure was not that typed edges are useless. The failure was that the first order edge detector did not expose the relation clearly enough.
+
+### Main interpretation
+
+This strongly supports the layered view:
+
+```text
+scalar graph edges        -> enough for simple routing / partial recall
+relation typed edges      -> needed for temporal/order computation
+keyed typed read edges    -> useful for associative recall
+```
+
+In other words:
+
+```text
+connections are not one thing.
+there are different species of connection.
+```
+
+A better artificial worm should therefore be closer to:
+
+```text
+cell state
++ sparse chemical graph
++ gap/diffusion graph
++ pairwise relation bank
++ keyed memory read bank
++ learned routing over edge types
+```
+
+Not just:
+
+```text
+one dense learned matrix
+```
+
+### Caveat
+
+This is still a toy benchmark. It proves the mechanism inside controlled synthetic tasks, not biological realism and not general real-world performance yet.
+
+The next useful step is to make the edge-type router learn when to use:
+
+```text
+chemical / sparse graph
+pairwise order relation
+keyed read
+gap diffusion
+```
+
+instead of always adding all typed channels.
