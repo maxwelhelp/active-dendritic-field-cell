@@ -246,7 +246,7 @@ class GraphChannel(nn.Module):
     def forward(self,x):
         B,T,F=x.shape; N=self.n_nodes; D=self.d
         A_pos=torch.softmax(self.A_logits.masked_fill(self.mask<=0,-1e4),dim=1)
-        dale=self.ei_type.to(A_pos.dtype)[None,:]
+        dale=getattr(self,'ei_type',torch.sign(torch.tanh(self.ei))).to(A_pos.dtype)[None,:]
         A=A_pos*dale
         Graw=0.5*(self.G_logits+self.G_logits.t())
         G=torch.softmax(Graw.masked_fill(self.mask<=0,-1e4),dim=1)
