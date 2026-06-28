@@ -82,6 +82,8 @@ class LifeTaskMoEPolicy(nn.Module):
         self.order_to_action = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, action_h), nn.GELU(), nn.Linear(action_h, ACTIONS))
         self.key_to_action = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, action_h), nn.GELU(), nn.Linear(action_h, ACTIONS))
         self.contrast_proj = nn.Sequential(nn.LayerNorm(3 * FDIM), nn.Linear(3 * FDIM, action_h), nn.GELU(), nn.Linear(action_h, 64))
+        self.mod_router = nn.Sequential(nn.LayerNorm(3 * FDIM), nn.Linear(3 * FDIM, action_h), nn.GELU(), nn.Linear(action_h, 4))
+        self.mod_to_action = nn.Linear(4, ACTIONS)
         self.last_z = None
         self.channel_by_task = nn.Parameter(torch.tensor([
             [0.50, 0.15, 0.35],
@@ -105,12 +107,14 @@ class LifeTaskMoEPolicy(nn.Module):
         tp = torch.softmax(self.task_router(feat), dim=-1)
         ch = torch.softmax(self.channel_by_task, dim=-1)
         cw = tp @ ch
+        mods = torch.tanh(self.mod_router(feat))
         gl = self.graph_to_action(self.graph(x)) + self.graph_feat_to_action(self.graph_feat(feat))
         ol = self.order_to_action(self.order(x))
         kl = self.key_to_action(self.key(x))
         self.last_z = self.contrast_proj(feat)
         cpg_bias = torch.tanh(self.cpg_scale) * self.cpg().unsqueeze(0)
-        logits = cw[:, 0:1] * gl + cw[:, 1:2] * ol + cw[:, 2:3] * kl + cpg_bias
+        mod_gain = 1.0 + 0.20 * mods[:,0:1] - 0.10 * mods[:,1:2]
+        logits = (cw[:, 0:1] * gl + cw[:, 1:2] * ol + cw[:, 2:3] * kl + cpg_bias) * mod_gain + self.mod_to_action(mods)
         with torch.no_grad():
             tm = tp.mean(0).detach().cpu()
             wm = cw.mean(0).detach().cpu()
@@ -121,6 +125,7 @@ class LifeTaskMoEPolicy(nn.Module):
                 "w_graph": float(wm[0]), "w_order": float(wm[1]), "w_key": float(wm[2]),
                 "order_abs": float(oa.cpu()), "key_entropy": float(ke.cpu()),
                 "cpg_scale": float(torch.tanh(self.cpg_scale).detach().cpu()),
+                "mod_da": float(mods[:,0].mean().detach().cpu()), "mod_5ht": float(mods[:,1].mean().detach().cpu()), "mod_oct": float(mods[:,2].mean().detach().cpu()), "mod_ach": float(mods[:,3].mean().detach().cpu()),
             }
             self.order.last_abs = oa.detach()
             self.key.last_entropy = ke.detach()
@@ -159,18 +164,27 @@ class LifeTaskMoEPolicy(nn.Module):
             if pi.shape[0] > k_prune:
                 pi = pi[:k_prune]
             mask[pi[:,0], pi[:,1]] = 0
-        # grow new random edges from currently inactive non-diagonal slots
+        # grow new edges from top Hebbian inactive pairs; random only if no Hebbian trace yet
         inactive = (mask <= 0)
         eye = torch.eye(n, device=mask.device, dtype=torch.bool)
-        candidates = (inactive & (~eye)).nonzero(as_tuple=False)
+        candidates_mask = inactive & (~eye)
         k_grow = max(1, int(active_count * grow_frac))
-        if candidates.shape[0] > 0:
-            perm = torch.randperm(candidates.shape[0], device=mask.device)[:min(k_grow, candidates.shape[0])]
-            gi = candidates[perm]
+        if candidates_mask.any():
+            hebb_grow = getattr(self.graph, '_hebb', None)
+            if hebb_grow is not None:
+                scores = hebb_grow.detach().to(mask.device).masked_fill(~candidates_mask, -1e9)
+                flat = scores.flatten()
+                gi_flat = torch.topk(flat, min(k_grow, int(candidates_mask.sum().item())), largest=True).indices
+                gi = torch.stack([gi_flat // n, gi_flat % n], dim=1)
+            else:
+                candidates = candidates_mask.nonzero(as_tuple=False)
+                perm = torch.randperm(candidates.shape[0], device=mask.device)[:min(k_grow, candidates.shape[0])]
+                gi = candidates[perm]
             mask[gi[:,0], gi[:,1]] = 1
             self.graph.A_logits.data[gi[:,0], gi[:,1]].normal_(0.0, 0.02)
+        ei_changed = self.graph.maybe_switch_ei(getattr(self, 'ei_flip_prob', 0.0)) if hasattr(self.graph, 'maybe_switch_ei') else 0
         new_count = int((mask > 0).sum().item())
-        changed = abs(new_count - active_count) + k_prune + k_grow
+        changed = abs(new_count - active_count) + k_prune + k_grow + ei_changed
         return int(changed), new_count, new_count / max(1, n * (n - 1))
 
 
@@ -205,6 +219,8 @@ class LifeGPUEnv:
         self.agent_code = torch.randn(self.N, 4, device=device)
         self.obs_buffer = torch.zeros(self.N, self.seq_len, FDIM, device=device)
         self.agent_state = torch.zeros(self.N, FDIM, device=device)
+        self.agent_cpg_phase = torch.rand(self.N, ACTIONS, device=device) * math.tau
+        self.agent_cpg_freq = torch.rand(self.N, ACTIONS, device=device) * 0.03 + 0.05
         self.size = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.6, 2.0)
         self.speed = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.6, 2.0)
         self.tool = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.4, 2.4)
@@ -344,7 +360,9 @@ class LifeGPUEnv:
             xseq, tid, aux = self.encode_obs_sequence()
         xseq = xseq.detach()
         self.agent_state = (0.90 * self.agent_state + 0.10 * xseq[:, -1]).detach()
-        base_logits = self.policy(xseq) + self.state_to_action(self.agent_state)
+        self.agent_cpg_phase = (self.agent_cpg_phase + self.agent_cpg_freq) % math.tau
+        cpg_agent_bias = self.args.agent_cpg_scale * torch.sin(self.agent_cpg_phase)
+        base_logits = self.policy(xseq) + self.state_to_action(self.agent_state) + cpg_agent_bias
         logits = base_logits + self.agent_adapter
         action = torch.sigmoid(logits)
         target = self.teacher_targets(aux)
@@ -382,6 +400,7 @@ class LifeGPUEnv:
         self.opt.step()
         struct_changed = 0; alive_edges = 0; edge_density = 0.0
         if self.args.structural_interval > 0 and (self.step_i % self.args.structural_interval == 0):
+            self.policy.ei_flip_prob = self.args.ei_flip_prob
             struct_changed, alive_edges, edge_density = self.policy.structural_update(self.args.prune_frac, self.args.grow_frac)
         else:
             alive_edges = int((self.policy.graph.mask > 0).sum().item())
@@ -496,6 +515,8 @@ class LifeGPUEnv:
             self.seg_y[child_slots] = (self.y[child_slots, None] - torch.sin(self.angle[child_slots])[:, None] * self.seg_len * kk) % self.H
             self.obs_buffer[child_slots].zero_()
             self.agent_state[child_slots] = self.agent_state[parent_pick].detach() * 0.25
+            self.agent_cpg_phase[child_slots] = (self.agent_cpg_phase[parent_pick] + torch.randn(births, ACTIONS, device=self.device) * 0.10) % math.tau
+            self.agent_cpg_freq[child_slots] = (self.agent_cpg_freq[parent_pick] + torch.randn(births, ACTIONS, device=self.device) * 0.005).clamp(0.02, 0.12)
         cost = self.args.metabolism + self.args.move_cost * speed
         cost = cost + self.args.shape_cost * (sh[:, 0] * self.speed + sh[:, 1] * self.tool + sh[:, 2] * self.guard + sh[:, 3])
         cost = cost + self.args.wiggle_cost * (wave.abs() + bend.abs() + phase_drive.abs() + stiffness.abs())
@@ -521,10 +542,13 @@ class LifeGPUEnv:
                 self.agent_adapter.data[dead].normal_(0.0, self.args.adapter_reset_std)
                 self.obs_buffer[dead].zero_()
                 self.agent_state[dead].zero_()
+                self.agent_cpg_phase[dead] = torch.rand(dead_n, ACTIONS, device=self.device) * math.tau
+                self.agent_cpg_freq[dead] = torch.rand(dead_n, ACTIONS, device=self.device) * 0.03 + 0.05
         reward = (self.energy - old_energy).mean() / max(1.0, self.args.food_energy)
         self.x = self.x.detach(); self.y = self.y.detach(); self.angle = self.angle.detach(); self.phase = self.phase.detach()
         self.seg_x = self.seg_x.detach(); self.seg_y = self.seg_y.detach()
         self.agent_state = self.agent_state.detach()
+        self.agent_cpg_phase = self.agent_cpg_phase.detach(); self.agent_cpg_freq = self.agent_cpg_freq.detach()
         self.energy = self.energy.detach(); self.age = self.age.detach()
         self.last = {
             "step": self.step_i,
@@ -566,6 +590,7 @@ class LifeGPUEnv:
             "struct_changed": struct_changed,
             "adapter_abs": float(self.agent_adapter.detach().abs().mean().cpu()),
             "state_abs": float(self.agent_state.detach().abs().mean().cpu()),
+            "cpg_phase_mean": float(self.agent_cpg_phase.detach().mean().cpu()),
             **stats,
         }
         return self.last
@@ -638,6 +663,8 @@ def main():
     p.add_argument("--structural-interval", type=int, default=50)
     p.add_argument("--prune-frac", type=float, default=0.002)
     p.add_argument("--grow-frac", type=float, default=0.002)
+    p.add_argument("--ei-flip-prob", type=float, default=0.0005)
+    p.add_argument("--agent-cpg-scale", type=float, default=0.15)
     p.add_argument("--hunger-loss-weight", type=float, default=1.5)
     p.add_argument("--risk-loss-weight", type=float, default=2.0)
     p.add_argument("--log-every", type=int, default=50)

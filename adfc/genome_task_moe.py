@@ -224,6 +224,10 @@ class GraphChannel(nn.Module):
         super().__init__(); self.n_nodes=n_nodes; self.d=d; self.sensor_nodes=sensor_nodes; self.motor_nodes=motor_nodes
         self.sensor_embed=nn.Parameter(torch.randn(sensor_nodes,d)/math.sqrt(d))
         self.node_bias=nn.Parameter(torch.zeros(n_nodes,d)); self.cell=SharedADFCCell(d,n_nodes)
+        hidden_nodes=max(1,n_nodes-sensor_nodes-motor_nodes)
+        self.cell_s=SharedADFCCell(d,sensor_nodes)
+        self.cell_h=SharedADFCCell(d,hidden_nodes)
+        self.cell_m=SharedADFCCell(d,motor_nodes)
         self.norm=nn.LayerNorm(d); self.head=nn.Linear(d*motor_nodes,2)
         rng=random.Random(123); mask=torch.zeros(n_nodes,n_nodes)
         for i in range(n_nodes):
@@ -235,14 +239,20 @@ class GraphChannel(nn.Module):
         mask.fill_diagonal_(0); self.register_buffer('mask',mask)
         self.A_logits=nn.Parameter(torch.randn(n_nodes,n_nodes)*0.02)
         self.ei=nn.Parameter(torch.randn(n_nodes)*0.25+0.35)
+        self.register_buffer("ei_type", torch.ones(n_nodes))
         self.G_logits=nn.Parameter(torch.randn(n_nodes,n_nodes)*0.01)
         self.gap_scale=nn.Parameter(torch.tensor(0.10))
         with torch.no_grad():
             self.cell.decay[:sensor_nodes].fill_(-1.5)
             self.cell.decay[sensor_nodes:].fill_(0.6)
+            self.cell_s.decay.fill_(-1.7)
+            self.cell_h.decay.fill_(0.45)
+            self.cell_m.decay.fill_(0.15)
             split=max(1,int(0.75*n_nodes))
             self.ei[:split].fill_(1.0)
             self.ei[split:].fill_(-1.0)
+            self.ei_type[:split].fill_(1.0)
+            self.ei_type[split:].fill_(-1.0)
     def forward(self,x):
         B,T,F=x.shape; N=self.n_nodes; D=self.d
         A_pos=torch.softmax(self.A_logits.masked_fill(self.mask<=0,-1e4),dim=1)
@@ -258,7 +268,10 @@ class GraphChannel(nn.Module):
             chem=torch.einsum('ij,bjd->bid',A,h)
             gap=torch.einsum('ij,bjd->bid',G,h)
             msg=chem+torch.sigmoid(self.gap_scale)*gap
-            h=self.cell(h,u,msg)
+            hs=self.cell_s(h[:,:self.sensor_nodes],u[:,:self.sensor_nodes],msg[:,:self.sensor_nodes])
+            hh=self.cell_h(h[:,self.sensor_nodes:motor_start],u[:,self.sensor_nodes:motor_start],msg[:,self.sensor_nodes:motor_start]) if motor_start>self.sensor_nodes else h[:,self.sensor_nodes:motor_start]
+            hm=self.cell_m(h[:,motor_start:],u[:,motor_start:],msg[:,motor_start:])
+            h=torch.cat([hs,hh,hm],dim=1)
         with torch.no_grad():
             act=h.detach().norm(dim=-1)
             corr=torch.einsum('bi,bj->ij',act,act)/max(1,act.shape[0])
@@ -266,6 +279,15 @@ class GraphChannel(nn.Module):
             self._hebb=corr if prev is None else 0.97*prev+0.03*corr
         return self.head(self.norm(h[:,motor_start:,:]).reshape(B,-1))
 
+    @torch.no_grad()
+    def maybe_switch_ei(self, prob: float = 0.0005):
+        if prob <= 0:
+            return 0
+        flip = torch.rand_like(self.ei_type) < prob
+        if flip.any():
+            self.ei_type[flip] *= -1.0
+            self.ei.data.copy_(self.ei_type.float())
+        return int(flip.sum().item())
 
 class AlwaysTypedDNA(nn.Module):
     def __init__(self,args):

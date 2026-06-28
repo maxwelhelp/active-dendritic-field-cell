@@ -67,6 +67,8 @@ def main():
     p.add_argument('--structural-interval',type=int,default=50)
     p.add_argument('--prune-frac',type=float,default=0.002)
     p.add_argument('--grow-frac',type=float,default=0.002)
+    p.add_argument('--ei-flip-prob',type=float,default=0.0005)
+    p.add_argument('--agent-cpg-scale',type=float,default=0.15)
     p.add_argument('--hunger-loss-weight',type=float,default=1.5)
     p.add_argument('--risk-loss-weight',type=float,default=2.0)
     p.add_argument('--log-every',type=int,default=20)
