@@ -22,6 +22,22 @@ ACTIONS = 13
 FDIM = 29
 
 
+def info_nce_by_task(z: torch.Tensor, tid: torch.Tensor, tau: float = 0.12):
+    if z.shape[0] < 3:
+        return z.new_tensor(0.0)
+    z = F.normalize(z, dim=-1)
+    sim = (z @ z.t()) / tau
+    eye = torch.eye(z.shape[0], dtype=torch.bool, device=z.device)
+    same = (tid[:, None] == tid[None, :]) & (~eye)
+    valid = same.any(dim=1)
+    if not valid.any():
+        return z.new_tensor(0.0)
+    sim_all = sim.masked_fill(eye, -1e9)
+    log_den = torch.logsumexp(sim_all, dim=1)
+    log_pos = torch.logsumexp(sim.masked_fill(~same, -1e9), dim=1)
+    return -(log_pos[valid] - log_den[valid]).mean()
+
+
 def detach_nonparam_tensor_state(module: nn.Module):
     for m in module.modules():
         ps = set(m._parameters.keys())
@@ -46,8 +62,12 @@ class LifeTaskMoEPolicy(nn.Module):
         action_h = max(128, dim)
         self.task_router = nn.Sequential(nn.LayerNorm(3 * FDIM), nn.Linear(3 * FDIM, router_h), nn.GELU(), nn.Linear(router_h, router_h), nn.GELU(), nn.Linear(router_h, 4))
         self.graph_to_action = nn.Sequential(nn.Linear(2, action_h), nn.GELU(), nn.Linear(action_h, action_h), nn.GELU(), nn.Linear(action_h, ACTIONS))
+        self.graph_feat = nn.Sequential(nn.LayerNorm(3 * FDIM), nn.Linear(3 * FDIM, action_h), nn.GELU(), nn.Linear(action_h, action_h), nn.GELU())
+        self.graph_feat_to_action = nn.Linear(action_h, ACTIONS)
         self.order_to_action = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, action_h), nn.GELU(), nn.Linear(action_h, ACTIONS))
         self.key_to_action = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, action_h), nn.GELU(), nn.Linear(action_h, ACTIONS))
+        self.contrast_proj = nn.Sequential(nn.LayerNorm(3 * FDIM), nn.Linear(3 * FDIM, action_h), nn.GELU(), nn.Linear(action_h, 64))
+        self.last_z = None
         self.channel_by_task = nn.Parameter(torch.tensor([
             [0.50, 0.15, 0.35],
             [0.45, 0.40, 0.15],
@@ -56,17 +76,22 @@ class LifeTaskMoEPolicy(nn.Module):
         ], dtype=torch.float32))
         self.last_stats = {}
 
+    def encode_feat(self, x):
+        return torch.cat([x.mean(1), x.max(1).values, x[:, -1]], dim=-1)
+
     def task_probs(self, x):
-        feat = torch.cat([x.mean(1), x.max(1).values, x[:, -1]], dim=-1)
+        feat = self.encode_feat(x)
         return torch.softmax(self.task_router(feat), dim=-1)
 
     def forward(self, x):
-        tp = self.task_probs(x)
+        feat = self.encode_feat(x)
+        tp = torch.softmax(self.task_router(feat), dim=-1)
         ch = torch.softmax(self.channel_by_task, dim=-1)
         cw = tp @ ch
-        gl = self.graph_to_action(self.graph(x))
+        gl = self.graph_to_action(self.graph(x)) + self.graph_feat_to_action(self.graph_feat(feat))
         ol = self.order_to_action(self.order(x))
         kl = self.key_to_action(self.key(x))
+        self.last_z = self.contrast_proj(feat)
         logits = cw[:, 0:1] * gl + cw[:, 1:2] * ol + cw[:, 2:3] * kl
         with torch.no_grad():
             tm = tp.mean(0).detach().cpu()
@@ -97,7 +122,7 @@ class LifeTaskMoEPolicy(nn.Module):
         n = mask.shape[0]
         active = (mask > 0)
         active_count = int(active.sum().item())
-        if active_count <= n:
+        if active_count <= 0:
             return 0, active_count, active_count / max(1, n * (n - 1))
         # prune low-utility existing edges
         k_prune = max(1, int(active_count * prune_frac))
@@ -138,9 +163,10 @@ class LifeGPUEnv:
         self.step_i = 0
         torch.manual_seed(args.seed)
         self.policy = LifeTaskMoEPolicy(args.nodes, args.dim, args.seq_len, args.motor_nodes, args.degree).to(device)
+        self.state_to_action = nn.Sequential(nn.LayerNorm(FDIM), nn.Linear(FDIM, ACTIONS)).to(device)
         self.agent_adapter = nn.Parameter(torch.zeros(self.N, ACTIONS, device=device))
         nn.init.normal_(self.agent_adapter, 0.0, args.adapter_init_std)
-        self.opt = torch.optim.AdamW(list(self.policy.parameters()) + [self.agent_adapter], lr=args.lr, weight_decay=args.weight_decay)
+        self.opt = torch.optim.AdamW(list(self.policy.parameters()) + list(self.state_to_action.parameters()) + [self.agent_adapter], lr=args.lr, weight_decay=args.weight_decay)
         self.x = torch.rand(self.N, device=device) * self.W
         self.y = torch.rand(self.N, device=device) * self.H
         self.angle = torch.rand(self.N, device=device) * math.tau
@@ -154,6 +180,8 @@ class LifeGPUEnv:
         self.age = torch.zeros(self.N, device=device)
         self.sex = torch.randint(0, 2, (self.N,), device=device).float()
         self.agent_code = torch.randn(self.N, 4, device=device)
+        self.obs_buffer = torch.zeros(self.N, self.seq_len, FDIM, device=device)
+        self.agent_state = torch.zeros(self.N, FDIM, device=device)
         self.size = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.6, 2.0)
         self.speed = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.6, 2.0)
         self.tool = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.4, 2.4)
@@ -234,17 +262,25 @@ class LifeGPUEnv:
         can_pair = (self.energy > self.args.reproduce_energy).float()
         opposite_smell = torch.where(self.sex > 0.5, ms, qs)
         rest_need = (self.energy < self.args.hunger_energy * 0.55).float()
-        task_score = torch.stack([hunger + fs, danger, can_pair * opposite_smell, rest_need], dim=1)
+        energy_need = (1.0 - (self.energy / self.args.reproduce_energy).clamp(0, 1))
+        forage_score = energy_need * (0.25 + fs)
+        avoid_score = 1.7 * danger
+        pair_score = can_pair * opposite_smell
+        rest_score = rest_need * (1.0 - fs).clamp(0, 1)
+        task_score = torch.stack([forage_score, avoid_score, pair_score, rest_score], dim=1)
         tid = task_score.argmax(dim=1)
-        base[torch.arange(self.N, device=self.device), 12 + tid] = 1.0
+        # No task one-hot leak here: router must infer task from state/smell/energy.
+        base[:, 12] = self.sex
+        base[:, 13] = torch.sin(self.phase)
+        base[:, 14] = torch.cos(self.phase)
+        base[:, 15] = (self.age / max(1.0, self.args.max_age)).clamp(0, 1)
         base[:, 16:20] = self.agent_code
         base[:, 20] = fs; base[:, 21] = fvx; base[:, 22] = fvy
         base[:, 23] = ms; base[:, 24] = mvx; base[:, 25] = mvy
         base[:, 26] = qs; base[:, 27] = qvx; base[:, 28] = qvy
-        x = base[:, None, :].repeat(1, self.seq_len, 1)
-        pos = torch.linspace(-1, 1, self.seq_len, device=self.device)[None, :, None]
-        x[:, :, 0:1] = x[:, :, 0:1] + 0.05 * pos
-        return x, tid, (fidx, fdx, fdy, fd, aidx, adx, ady, ad, fvx, fvy, mvx, mvy, qvx, qvy)
+        self.obs_buffer = torch.roll(self.obs_buffer, shifts=-1, dims=1)
+        self.obs_buffer[:, -1, :] = base.detach()
+        return self.obs_buffer.detach().clone(), tid, (fidx, fdx, fdy, fd, aidx, adx, ady, ad, fvx, fvy, mvx, mvy, qvx, qvy)
 
     def teacher_targets(self, aux):
         fidx, fdx, fdy, fd, aidx, adx, ady, ad, fvx, fvy, mvx, mvy, qvx, qvy = aux
@@ -284,12 +320,13 @@ class LifeGPUEnv:
         with torch.no_grad():
             xseq, tid, aux = self.encode_obs_sequence()
         xseq = xseq.detach()
-        base_logits = self.policy(xseq)
+        self.agent_state = (0.90 * self.agent_state + 0.10 * xseq[:, -1]).detach()
+        base_logits = self.policy(xseq) + self.state_to_action(self.agent_state)
         logits = base_logits + self.agent_adapter
         action = torch.sigmoid(logits)
         target = self.teacher_targets(aux)
-        hunger_now = (1.0 - (self.energy / self.args.hunger_energy).clamp(0, 1)).detach()
-        risk_now = (self.energy < self.args.hunger_energy * 0.45).float().detach()
+        hunger_now = (1.0 - (self.energy / self.args.reproduce_energy).clamp(0, 1)).detach()
+        risk_now = (self.energy < self.args.hunger_energy * 1.10).float().detach()
         survival_weight = (1.0 + self.args.hunger_loss_weight * hunger_now + self.args.risk_loss_weight * risk_now).clamp(1.0, 5.0)
         # Split credit assignment: shared trunk gets slower/global correction;
         # per-agent adapter gets stronger local survival correction.
@@ -308,11 +345,14 @@ class LifeGPUEnv:
         mean_cw = (tp_for_loss @ ch).mean(dim=0).clamp_min(1e-8)
         channel_entropy = -(mean_cw * mean_cw.log()).sum()
         balance_loss = F.relu(self.args.task_entropy_min - task_entropy).pow(2) + F.relu(self.args.channel_entropy_min - channel_entropy).pow(2)
+        loss_contrast = info_nce_by_task(self.policy.last_z, tid, self.args.contrast_tau) if self.policy.last_z is not None else action.new_tensor(0.0)
         stats = self.policy.stats()
         detach_nonparam_tensor_state(self.policy)
-        reg = self.args.cost_lambda * action.mean()
+        reg_shared = self.args.cost_lambda * action_shared.mean()
+        reg_adapter = self.args.cost_lambda * action_agent.mean()
+        reg = self.args.shared_loss_weight * reg_shared + self.args.adapter_loss_weight * reg_adapter
         connect_loss = self.args.connection_lambda * self.policy.connection_cost()
-        loss = loss_policy + self.args.task_lambda * loss_task + self.args.balance_lambda * balance_loss + connect_loss + reg
+        loss = loss_policy + self.args.task_lambda * loss_task + self.args.balance_lambda * balance_loss + self.args.contrast_lambda * loss_contrast + connect_loss + reg
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
@@ -366,8 +406,10 @@ class LifeGPUEnv:
             py = (prev_y - torch.sin(seg_ang[:, j]) * self.seg_len) % self.H
             # friction/muscle inertia: segments do not instantly teleport to target
             oldx = self.seg_x[:, j]; oldy = self.seg_y[:, j]
-            nx = (oldx * self.args.segment_inertia + px * (1.0 - self.args.segment_inertia)) % self.W
-            ny = (oldy * self.args.segment_inertia + py * (1.0 - self.args.segment_inertia)) % self.H
+            ddx = self.wrap_delta(px - oldx, self.W)
+            ddy = self.wrap_delta(py - oldy, self.H)
+            nx = (oldx + ddx * (1.0 - self.args.segment_inertia)) % self.W
+            ny = (oldy + ddy * (1.0 - self.args.segment_inertia)) % self.H
             # length projection back to fixed distance from previous joint
             vx = self.wrap_delta(nx - prev_x, self.W)
             vy = self.wrap_delta(ny - prev_y, self.H)
@@ -401,13 +443,36 @@ class LifeGPUEnv:
         transfer = torch.minimum(transfer, self.energy[aidx].clamp_min(0))
         contact_events = int((transfer > 1e-5).sum().detach().cpu())
         transfer_mean = float(transfer.mean().detach().cpu())
-        self.energy = self.energy + transfer * 0.75
-        self.energy[aidx] = self.energy[aidx] - transfer
+        drain = torch.zeros_like(self.energy)
+        drain.scatter_add_(0, aidx, transfer)
+        self.energy = self.energy + transfer * 0.75 - drain
         can_birth = (pair > 0.65) & (self.energy > self.args.reproduce_energy)
-        births = int(can_birth.sum().item())
+        parent_idx = can_birth.nonzero(as_tuple=False).flatten()
+        max_births = max(1, int(self.N * self.args.birth_frac))
+        births = min(int(parent_idx.numel()), max_births)
         if births:
             self.births += births
-            self.energy[can_birth] -= self.args.child_energy * 0.5
+            parent_pick = parent_idx[torch.randint(parent_idx.numel(), (births,), device=self.device)]
+            child_slots = torch.topk(self.energy, births, largest=False).indices
+            self.energy[parent_pick] -= self.args.child_energy * 0.5
+            self.energy[child_slots] = self.args.child_energy
+            self.age[child_slots] = 0
+            self.sex[child_slots] = torch.randint(0, 2, (births,), device=self.device).float()
+            self.x[child_slots] = (self.x[parent_pick] + torch.randn(births, device=self.device) * self.seg_len * 2.0) % self.W
+            self.y[child_slots] = (self.y[parent_pick] + torch.randn(births, device=self.device) * self.seg_len * 2.0) % self.H
+            self.angle[child_slots] = self.angle[parent_pick] + torch.randn(births, device=self.device) * 0.25
+            self.phase[child_slots] = torch.rand(births, device=self.device) * math.tau
+            self.size[child_slots] = (self.size[parent_pick] * torch.exp(torch.randn(births, device=self.device) * self.args.morph_mut_std)).clamp(0.6, 2.0)
+            self.speed[child_slots] = (self.speed[parent_pick] * torch.exp(torch.randn(births, device=self.device) * self.args.morph_mut_std)).clamp(0.6, 2.0)
+            self.tool[child_slots] = (self.tool[parent_pick] * torch.exp(torch.randn(births, device=self.device) * self.args.morph_mut_std)).clamp(0.4, 2.4)
+            self.guard[child_slots] = (self.guard[parent_pick] * torch.exp(torch.randn(births, device=self.device) * self.args.morph_mut_std)).clamp(0.2, 2.2)
+            self.agent_code[child_slots] = self.agent_code[parent_pick] + torch.randn(births, 4, device=self.device) * self.args.code_mut_std
+            self.agent_adapter.data[child_slots] = self.agent_adapter.data[parent_pick] + torch.randn(births, ACTIONS, device=self.device) * self.args.adapter_inherit_std
+            kk = torch.arange(self.seg_n, device=self.device).float()[None, :]
+            self.seg_x[child_slots] = (self.x[child_slots, None] - torch.cos(self.angle[child_slots])[:, None] * self.seg_len * kk) % self.W
+            self.seg_y[child_slots] = (self.y[child_slots, None] - torch.sin(self.angle[child_slots])[:, None] * self.seg_len * kk) % self.H
+            self.obs_buffer[child_slots].zero_()
+            self.agent_state[child_slots] = self.agent_state[parent_pick].detach() * 0.25
         cost = self.args.metabolism + self.args.move_cost * speed
         cost = cost + self.args.shape_cost * (sh[:, 0] * self.speed + sh[:, 1] * self.tool + sh[:, 2] * self.guard + sh[:, 3])
         cost = cost + self.args.wiggle_cost * (wave.abs() + bend.abs() + phase_drive.abs() + stiffness.abs())
@@ -431,9 +496,12 @@ class LifeGPUEnv:
                 self.seg_y[dead] = (self.y[dead, None] - torch.sin(self.angle[dead])[:, None] * self.seg_len * kk) % self.H
                 self.agent_code[dead] = torch.randn(dead_n, 4, device=self.device)
                 self.agent_adapter.data[dead].normal_(0.0, self.args.adapter_reset_std)
+                self.obs_buffer[dead].zero_()
+                self.agent_state[dead].zero_()
         reward = (self.energy - old_energy).mean() / max(1.0, self.args.food_energy)
         self.x = self.x.detach(); self.y = self.y.detach(); self.angle = self.angle.detach(); self.phase = self.phase.detach()
         self.seg_x = self.seg_x.detach(); self.seg_y = self.seg_y.detach()
+        self.agent_state = self.agent_state.detach()
         self.energy = self.energy.detach(); self.age = self.age.detach()
         self.last = {
             "step": self.step_i,
@@ -442,6 +510,9 @@ class LifeGPUEnv:
             "loss_shared": float(loss_shared.detach().cpu()),
             "loss_adapter": float(loss_adapter.detach().cpu()),
             "loss_task": float(loss_task.detach().cpu()),
+            "loss_contrast": float(loss_contrast.detach().cpu()),
+            "reg_shared": float(reg_shared.detach().cpu()),
+            "reg_adapter": float(reg_adapter.detach().cpu()),
             "balance_loss": float(balance_loss.detach().cpu()),
             "task_entropy": float(task_entropy.detach().cpu()),
             "channel_entropy": float(channel_entropy.detach().cpu()),
@@ -457,6 +528,7 @@ class LifeGPUEnv:
             "deaths": self.deaths,
             "contact_events": contact_events,
             "transfer_mean": transfer_mean,
+            "drain_mean": float(drain.mean().detach().cpu()),
             "shape_speed": float(sh[:, 0].mean().detach().cpu()),
             "shape_tool": float(sh[:, 1].mean().detach().cpu()),
             "shape_guard": float(sh[:, 2].mean().detach().cpu()),
@@ -470,6 +542,7 @@ class LifeGPUEnv:
             "edge_density": edge_density,
             "struct_changed": struct_changed,
             "adapter_abs": float(self.agent_adapter.detach().abs().mean().cpu()),
+            "state_abs": float(self.agent_state.detach().abs().mean().cpu()),
             **stats,
         }
         return self.last
@@ -526,6 +599,8 @@ def main():
     p.add_argument("--cost-lambda", type=float, default=0.002)
     p.add_argument("--connection-lambda", type=float, default=0.001)
     p.add_argument("--task-lambda", type=float, default=0.05)
+    p.add_argument("--contrast-lambda", type=float, default=0.03)
+    p.add_argument("--contrast-tau", type=float, default=0.12)
     p.add_argument("--balance-lambda", type=float, default=0.02)
     p.add_argument("--task-entropy-min", type=float, default=0.55)
     p.add_argument("--channel-entropy-min", type=float, default=0.75)
@@ -533,6 +608,10 @@ def main():
     p.add_argument("--adapter-loss-weight", type=float, default=1.00)
     p.add_argument("--adapter-init-std", type=float, default=0.02)
     p.add_argument("--adapter-reset-std", type=float, default=0.08)
+    p.add_argument("--adapter-inherit-std", type=float, default=0.025)
+    p.add_argument("--code-mut-std", type=float, default=0.05)
+    p.add_argument("--morph-mut-std", type=float, default=0.035)
+    p.add_argument("--birth-frac", type=float, default=0.025)
     p.add_argument("--structural-interval", type=int, default=50)
     p.add_argument("--prune-frac", type=float, default=0.002)
     p.add_argument("--grow-frac", type=float, default=0.002)
