@@ -107,13 +107,13 @@ class LifeTaskMoEPolicy(nn.Module):
         tp = torch.softmax(self.task_router(feat), dim=-1)
         ch = torch.softmax(self.channel_by_task, dim=-1)
         cw = tp @ ch
-        mods = torch.tanh(self.mod_router(feat))
+        mods = 0.60 * torch.tanh(self.mod_router(feat))
         gl = self.graph_to_action(self.graph(x)) + self.graph_feat_to_action(self.graph_feat(feat))
         ol = self.order_to_action(self.order(x))
         kl = self.key_to_action(self.key(x))
         self.last_z = self.contrast_proj(feat)
         cpg_bias = torch.tanh(self.cpg_scale) * self.cpg().unsqueeze(0)
-        mod_gain = 1.0 + 0.20 * mods[:,0:1] - 0.10 * mods[:,1:2]
+        mod_gain = 1.0 + 0.25 * mods[:,0:1] - 0.08 * mods[:,1:2]
         logits = (cw[:, 0:1] * gl + cw[:, 1:2] * ol + cw[:, 2:3] * kl + cpg_bias) * mod_gain + self.mod_to_action(mods)
         with torch.no_grad():
             tm = tp.mean(0).detach().cpu()
@@ -330,7 +330,8 @@ class LifeGPUEnv:
         diff = (desired - self.angle + math.pi) % (2 * math.pi) - math.pi
         target[:, 0] = (diff < -0.05).float().clamp(0, 1)
         target[:, 1] = (diff > 0.05).float().clamp(0, 1)
-        target[:, 2] = (0.20 + 0.70 * hunger).clamp(0, 1)
+        energy_need = (1.0 - (self.energy / self.args.reproduce_energy).clamp(0, 1))
+        target[:, 2] = (0.38 + 0.55 * energy_need).clamp(0, 1)
         near_food = (1.0 - fd / self.args.sense_radius).clamp(0, 1)
         target[:, 3] = near_food
         stronger = (self.energy[aidx] > self.energy * 1.15).float()
@@ -346,10 +347,10 @@ class LifeGPUEnv:
         target[pair_mask, 0] = torch.maximum(target[pair_mask, 0], (pair_diff[pair_mask] < -0.05).float())
         target[pair_mask, 1] = torch.maximum(target[pair_mask, 1], (pair_diff[pair_mask] > 0.05).float())
         target[:, 6] = ((self.energy < self.args.hunger_energy * 0.55).float() * (1.0 - near_food)).clamp(0, 1)
-        target[:, 7] = (0.15 + 0.60 * hunger).clamp(0, 1)
-        target[:, 8] = (0.25 + 0.55 * near_food).clamp(0, 1)
+        target[:, 7] = (0.45 + 0.45 * energy_need).clamp(0, 1)
+        target[:, 8] = (0.20 + 0.45 * near_food).clamp(0, 1)
         target[:, 9] = (0.20 + 0.60 * stronger * near_agent).clamp(0, 1)
-        target[:, 10] = (0.25 + 0.55 * (1.0 - near_food)).clamp(0, 1)
+        target[:, 10] = (0.20 + 0.35 * (1.0 - near_food)).clamp(0, 1)
         target[:, 11] = (0.5 + 0.5 * torch.sin(self.phase)).clamp(0, 1)
         target[:, 12] = (0.45 + 0.25 * near_agent).clamp(0, 1)
         return target
@@ -377,7 +378,10 @@ class LifeGPUEnv:
         agent_mse = ((action_agent - target) ** 2).mean(dim=1)
         loss_shared = (shared_mse * survival_weight).mean()
         loss_adapter = (agent_mse * survival_weight).mean()
-        loss_policy = self.args.shared_loss_weight * loss_shared + self.args.adapter_loss_weight * loss_adapter
+        move_drive = (action[:, 2] + action[:, 7]).clamp(0, 2)
+        wanted_drive = (0.85 + 0.75 * hunger_now).clamp(0, 1.6)
+        stall_loss = F.relu(wanted_drive - move_drive).pow(2).mean()
+        loss_policy = self.args.shared_loss_weight * loss_shared + self.args.adapter_loss_weight * loss_adapter + self.args.stall_lambda * stall_loss
         tp_for_loss = self.policy.task_probs(xseq).clamp_min(1e-8)
         loss_task = F.nll_loss(tp_for_loss.log(), tid)
         mean_tp = tp_for_loss.mean(dim=0).clamp_min(1e-8)
@@ -427,8 +431,8 @@ class LifeGPUEnv:
         seg_ang = self.angle[:, None] + local_curve
         # Undulatory locomotion: no direct teleport-thrust; forward motion comes from wave/stiffness
         # and is damped by lateral friction. More wave costs energy below.
-        undulation = torch.relu(wave * (0.25 + stiffness) * (0.65 + 0.35 * torch.cos(body_wave - bend)))
-        speed = self.args.max_speed * self.speed * (0.20 + 1.60 * sh[:, 0]) * undulation * (1.0 - 0.55 * rest)
+        undulation = torch.relu((0.18 + wave) * (0.55 + stiffness) * (0.70 + 0.30 * torch.cos(body_wave - bend)))
+        speed = self.args.max_speed * self.speed * (0.45 + 2.20 * sh[:, 0]) * undulation * (1.0 - 0.45 * rest)
         dx_raw = torch.cos(self.angle) * speed
         dy_raw = torch.sin(self.angle) * speed
         # anisotropic friction: sideways component slips less than forward component
@@ -557,6 +561,7 @@ class LifeGPUEnv:
             "loss_shared": float(loss_shared.detach().cpu()),
             "loss_adapter": float(loss_adapter.detach().cpu()),
             "loss_task": float(loss_task.detach().cpu()),
+            "stall_loss": float(stall_loss.detach().cpu()),
             "loss_contrast": float(loss_contrast.detach().cpu()),
             "reg_shared": float(reg_shared.detach().cpu()),
             "reg_adapter": float(reg_adapter.detach().cpu()),
@@ -623,12 +628,12 @@ def main():
     p.add_argument("--hunger-energy", type=float, default=28)
     p.add_argument("--reproduce-energy", type=float, default=88)
     p.add_argument("--child-energy", type=float, default=25)
-    p.add_argument("--food-energy", type=float, default=10)
-    p.add_argument("--food-spawn", type=float, default=0.015)
+    p.add_argument("--food-energy", type=float, default=18)
+    p.add_argument("--food-spawn", type=float, default=0.030)
     p.add_argument("--odor-radius", type=float, default=145)
     p.add_argument("--sense-radius", type=float, default=180)
     p.add_argument("--turn-rate", type=float, default=0.35)
-    p.add_argument("--max-speed", type=float, default=3.2)
+    p.add_argument("--max-speed", type=float, default=5.0)
     p.add_argument("--segments", type=int, default=7)
     p.add_argument("--segment-len", type=float, default=4.0)
     p.add_argument("--segment-phase-lag", type=float, default=0.85)
@@ -636,9 +641,9 @@ def main():
     p.add_argument("--lateral-slip", type=float, default=0.18)
     p.add_argument("--transfer-energy", type=float, default=8.0)
     p.add_argument("--metabolism", type=float, default=0.035)
-    p.add_argument("--move-cost", type=float, default=0.018)
-    p.add_argument("--shape-cost", type=float, default=0.018)
-    p.add_argument("--wiggle-cost", type=float, default=0.012)
+    p.add_argument("--move-cost", type=float, default=0.010)
+    p.add_argument("--shape-cost", type=float, default=0.012)
+    p.add_argument("--wiggle-cost", type=float, default=0.006)
     p.add_argument("--stretch-cost", type=float, default=0.020)
     p.add_argument("--neural-cost", type=float, default=0.018)
     p.add_argument("--max-age", type=float, default=4000)
@@ -667,6 +672,7 @@ def main():
     p.add_argument("--agent-cpg-scale", type=float, default=0.15)
     p.add_argument("--hunger-loss-weight", type=float, default=1.5)
     p.add_argument("--risk-loss-weight", type=float, default=2.0)
+    p.add_argument("--stall-lambda", type=float, default=0.20)
     p.add_argument("--log-every", type=int, default=50)
     args = p.parse_args()
     dev = require_cuda()
