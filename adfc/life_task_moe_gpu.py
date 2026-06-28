@@ -30,7 +30,7 @@ from genome_task_moe import GraphChannel, TaskMoEDNA, AlwaysTypedDNA
 LIFE_TASKS = ["forage", "avoid", "mate", "rest"]
 # action order: turn_left, turn_right, move, eat, attack, mate, rest, speed_shape, tool_shape, guard_shape, sense_shape
 ACTIONS = 11
-FDIM = 16
+FDIM = 20
 
 def detach_nonparam_tensor_state(module):
     for m in module.modules():
@@ -122,6 +122,7 @@ class LifeGPUEnv:
         self.energy = torch.full((self.N,), args.initial_energy, device=device)
         self.age = torch.zeros(self.N, device=device)
         self.sex = torch.randint(0, 2, (self.N,), device=device).float()
+        self.agent_code = torch.randn(self.N, 4, device=device)
         self.size = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.6, 2.0)
         self.speed = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.6, 2.0)
         self.tool = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.4, 2.4)
@@ -170,6 +171,7 @@ class LifeGPUEnv:
         base[:, 9] = (1.0 - ad / self.args.sense_radius).clamp(0, 1)
         base[:, 10] = self.size
         base[:, 11] = self.speed
+        base[:, 16:20] = self.agent_code
         # task prompt channels 12..15, selected from current ecological state
         hunger = base[:, 1]
         danger = base[:, 9] * (self.energy[aidx] > self.energy).float()
@@ -197,7 +199,7 @@ class LifeGPUEnv:
         target[:, 3] = near_food # eat
         stronger = (self.energy[aidx] > self.energy * 1.15).float()
         near_agent = (1.0 - ad / self.args.sense_radius).clamp(0, 1)
-        target[:, 4] = ((1.0 - stronger) * near_agent * 0.55).clamp(0, 1) # attack/steal when not weaker
+        target[:, 4] = ((1.0 - stronger) * near_agent * (0.25 + 0.55 * hunger)).clamp(0, 1)
         target[:, 5] = ((self.energy > self.args.reproduce_energy).float() * near_agent).clamp(0, 1)
         target[:, 6] = ((self.energy < self.args.hunger_energy * 0.65).float() * (1.0 - near_food)).clamp(0, 1)
         target[:, 7] = (0.20 + 0.55 * hunger).clamp(0, 1) # speed shape
@@ -213,13 +215,15 @@ class LifeGPUEnv:
         action = torch.sigmoid(logits)
         target = self.teacher_targets(aux)
         loss_policy = F.mse_loss(action, target)
+        tp_for_loss = self.policy.task_probs(xseq).clamp_min(1e-8)
+        loss_task = F.nll_loss(tp_for_loss.log(), tid)
         stats = self.policy.stats()
         detach_nonparam_tensor_state(self.policy)
         # IMPORTANT: train before mutating environment tensors used to build obs.
         # food_alive participates in torch.where inside nearest_food(); changing it
         # before backward causes an autograd version error. Physics uses detached action.
         reg = self.args.cost_lambda * action.mean()
-        loss = loss_policy + reg
+        loss = loss_policy + self.args.task_lambda * loss_task + reg
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
@@ -258,6 +262,8 @@ class LifeGPUEnv:
         near_a = ad < (7.0 + 8.0 * sh[:, 1] * self.tool)
         steal = near_a.float() * attack * self.args.steal_energy * (0.5 + sh[:, 1]) / (1.0 + self.guard[aidx] * sh[aidx, 2])
         steal = torch.minimum(steal, self.energy[aidx].clamp_min(0))
+        contact_events = int((steal > 1e-5).sum().detach().cpu())
+        transfer_mean = float(steal.mean().detach().cpu())
         self.energy = self.energy + steal * 0.75
         self.energy[aidx] = self.energy[aidx] - steal
         # costs
@@ -290,6 +296,9 @@ class LifeGPUEnv:
             "step": self.step_i,
             "loss": float(loss.detach().cpu()),
             "loss_policy": float(loss_policy.detach().cpu()),
+            "loss_task": float(loss_task.detach().cpu()),
+            "contact_events": contact_events,
+            "transfer_mean": transfer_mean,
             "reward_mean": float(reward.detach().cpu()),
             "energy_mean": float(self.energy.mean().detach().cpu()),
             "energy_max": float(self.energy.max().detach().cpu()),
@@ -345,6 +354,7 @@ def main():
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--cost-lambda", type=float, default=0.002)
+    p.add_argument("--task-lambda", type=float, default=0.05)
     p.add_argument("--log-every", type=int, default=50)
     args = p.parse_args()
     dev = require_cuda()

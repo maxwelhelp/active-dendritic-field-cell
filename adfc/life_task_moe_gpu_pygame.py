@@ -5,10 +5,8 @@ import argparse, math, time
 from pathlib import Path
 import torch
 
-from life_task_moe_gpu import LifeGPUEnv, write_csv, LifeTaskMoEPolicy
+from life_task_moe_gpu import LifeGPUEnv, write_csv
 from graph_adfc_worm import require_cuda, nparams
-from graph_adfc_worm_typed_bank import PairwiseOrderBank, KeyReadBank
-from genome_task_moe import GraphChannel, TaskMoEDNA, AlwaysTypedDNA
 
 
 def main():
@@ -53,7 +51,7 @@ def main():
     env=LifeGPUEnv(args,dev)
     print('=== 015 REAL GPU TaskMoE/ADFC Life + pygame ===',flush=True)
     print('device',dev,torch.cuda.get_device_name(0),'params',nparams(env.policy),flush=True)
-    print('imports: LifeTaskMoEPolicy GraphChannel TaskMoEDNA AlwaysTypedDNA PairwiseOrderBank KeyReadBank pygame',flush=True)
+    print('renderer only: LifeGPUEnv imported; policy lives inside env',flush=True)
 
     pygame.init()
     screen=pygame.display.set_mode((args.width,args.height))
@@ -78,20 +76,34 @@ def main():
             ax=env.x.detach().cpu().numpy(); ay=env.y.detach().cpu().numpy(); aa=env.angle.detach().cpu().numpy(); en=env.energy.detach().cpu().numpy(); sx=env.sex.detach().cpu().numpy()
         for x,y,ok in zip(fx,fy,fa):
             if ok: pygame.draw.circle(screen,(70,230,90),(int(x),int(y)),3)
+        phase = env.step_i * 0.18
         for x,y,ang,e,sex in zip(ax,ay,aa,en,sx):
             base=(80,150,255) if sex < 0.5 else (255,100,175)
             h=max(0.0,1.0-min(1.0,e/max(1.0,args.hunger_energy)))
             col=(int(base[0]*(1-h)+255*h),int(base[1]*(1-h)+60*h),int(base[2]*(1-h)+60*h))
-            r=5+int(4*min(1.0,e/max(1.0,args.reproduce_energy)))
-            pts=[(x+math.cos(ang)*(r+5),y+math.sin(ang)*(r+5)),(x+math.cos(ang+2.4)*r,y+math.sin(ang+2.4)*r),(x+math.cos(ang-2.4)*r,y+math.sin(ang-2.4)*r)]
-            pygame.draw.polygon(screen,col,[(int(a),int(b)) for a,b in pts])
+            r=2+int(2*min(1.0,e/max(1.0,args.reproduce_energy)))
+            # small worm body: sinusoidal chain of segments behind heading
+            for k in range(5):
+                back = k * (r + 2)
+                wig = math.sin(phase + k * 0.9 + x * 0.013) * (1.2 + 0.15 * k)
+                px = x - math.cos(ang) * back + math.cos(ang + math.pi/2) * wig
+                py = y - math.sin(ang) * back + math.sin(ang + math.pi/2) * wig
+                rr = max(1, r - k//2)
+                shade = 1.0 - 0.09 * k
+                cc = (int(col[0]*shade), int(col[1]*shade), int(col[2]*shade))
+                pygame.draw.circle(screen, cc, (int(px), int(py)), rr)
+            # nose/direction dot
+            nx = x + math.cos(ang) * (r + 2)
+            ny = y + math.sin(ang) * (r + 2)
+            pygame.draw.circle(screen, (240,240,240), (int(nx), int(ny)), 1)
         st=env.last or {}
         lines=[
             f"step={env.step_i} loss={st.get('loss',0):.4f} E={st.get('energy_mean',0):.1f} food={st.get('food_alive',0)}",
             f"w graph/order/key={st.get('w_graph',0):.2f}/{st.get('w_order',0):.2f}/{st.get('w_key',0):.2f}",
             f"tasks={st.get('p_forage',0):.2f}/{st.get('p_avoid',0):.2f}/{st.get('p_mate',0):.2f}/{st.get('p_rest',0):.2f}",
             f"shape={st.get('shape_speed',0):.2f}/{st.get('shape_tool',0):.2f}/{st.get('shape_guard',0):.2f}/{st.get('shape_sense',0):.2f}",
-            'REAL CUDA imports: GraphChannel + OrderBank + KeyReadBank',
+            f"contacts={st.get('contact_events',0)} transfer={st.get('transfer_mean',0):.3f}",
+            'renderer only: policy lives inside LifeGPUEnv',
             'SPACE pause | ESC quit',
         ]
         yy=5
