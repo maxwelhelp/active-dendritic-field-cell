@@ -16,6 +16,9 @@
 | 010 | [Utility structural plasticity](experiments/010_utility_structural_plasticity.md) | edge utility EMA + reward/decay + birth/prune | code + one-command runner ready; full check pending |
 | 011 | [Task-MoE specialization](experiments/011_task_moe_specialization.md) | task probabilities + task-conditioned graph subgates | task_moe peak 96.78%; clear task/channel specialization |
 | 012 | [Message-utility Task-MoE](experiments/012_message_utility_task_moe.md) | message-gradient edge utility + best checkpoint | task_moe_msgutil 95.80%; program 83.20%; edge utility still tiny |
+| 013 | [Real genome Task-MoE](experiments/013_real_genome_task_moe.md) | E. coli FASTA+GFF; start/strand/frame/body tasks | code + one-command runner ready; full check pending |
+| 014 | [ADFC Life Environment](experiments/014_ecosim_adfc_life.md) | resource-limited 2D world with inherited MicroADFC agents | visual simulation runner ready |
+| 014b | [Predator/Morphology Ecosystem](experiments/014b_predator_morph_ecosim.md) | fleeing prey + cannibal energy + inherited morphology/tools | predator and evolve runners ready; smoke shows kills and harsher selection |
 
 ## Current conclusion
 
