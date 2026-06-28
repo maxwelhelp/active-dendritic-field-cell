@@ -220,15 +220,18 @@ class GenomeBatcher:
 
 
 class GraphChannel(nn.Module):
-    def __init__(self, n_nodes, d, fdim, sensor_nodes, motor_nodes, degree):
+    def __init__(self, n_nodes, d, fdim, sensor_nodes, motor_nodes, degree, out_dim=2):
         super().__init__(); self.n_nodes=n_nodes; self.d=d; self.sensor_nodes=sensor_nodes; self.motor_nodes=motor_nodes
+        self.out_dim=out_dim
         self.sensor_embed=nn.Parameter(torch.randn(sensor_nodes,d)/math.sqrt(d))
         self.node_bias=nn.Parameter(torch.zeros(n_nodes,d)); self.cell=SharedADFCCell(d,n_nodes)
         hidden_nodes=max(1,n_nodes-sensor_nodes-motor_nodes)
         self.cell_s=SharedADFCCell(d,sensor_nodes)
         self.cell_h=SharedADFCCell(d,hidden_nodes)
         self.cell_m=SharedADFCCell(d,motor_nodes)
-        self.norm=nn.LayerNorm(d); self.head=nn.Linear(d*motor_nodes,2)
+        # Full-bandwidth readout: all motor-node states -> out_dim (was hard-coded 2,
+        # which throttled the whole recurrent graph down to 2 scalars for life policy).
+        self.norm=nn.LayerNorm(d); self.head=nn.Linear(d*motor_nodes,out_dim)
         rng=random.Random(123); mask=torch.zeros(n_nodes,n_nodes)
         for i in range(n_nodes):
             choices=[j for j in range(n_nodes) if j!=i]
@@ -254,22 +257,25 @@ class GraphChannel(nn.Module):
             self.ei_type[:split].fill_(1.0)
             self.ei_type[split:].fill_(-1.0)
     def forward(self,x):
-        B,T,F=x.shape; N=self.n_nodes; D=self.d
+        B,T,Fd=x.shape; N=self.n_nodes; D=self.d
         A_pos=torch.softmax(self.A_logits.masked_fill(self.mask<=0,-1e4),dim=1)
         dale=getattr(self,'ei_type',torch.sign(torch.tanh(self.ei))).to(A_pos.dtype)[None,:]
         A=A_pos*dale
         Graw=0.5*(self.G_logits+self.G_logits.t())
         G=torch.softmax(Graw.masked_fill(self.mask<=0,-1e4),dim=1)
-        h=self.node_bias.unsqueeze(0).expand(B,N,D).contiguous(); motor_start=N-self.motor_nodes
+        # Fuse chemical + gap-junction propagation into a single mixing matrix M (computed once,
+        # not per-timestep). msg = A@h + sigmoid(gap_scale)*G@h = (A + g*G)@h  -> one einsum/step.
+        M=(A+torch.sigmoid(self.gap_scale)*G).to(x.dtype)
+        sn=self.sensor_nodes; motor_start=N-self.motor_nodes
+        # Pre-embed all sensor inputs for the whole sequence at once (B,T,sn,D).
+        s_all=x[:,:,:sn].unsqueeze(-1)*self.sensor_embed.unsqueeze(0).unsqueeze(0)
+        h=self.node_bias.unsqueeze(0).expand(B,N,D).contiguous()
+        u=torch.zeros(B,N,D,device=x.device,dtype=x.dtype)
         for t in range(T):
-            u=torch.zeros(B,N,D,device=x.device,dtype=x.dtype)
-            s=x[:,t,:self.sensor_nodes]
-            u[:,:self.sensor_nodes,:]=s.unsqueeze(-1)*self.sensor_embed.unsqueeze(0)
-            chem=torch.einsum('ij,bjd->bid',A,h)
-            gap=torch.einsum('ij,bjd->bid',G,h)
-            msg=chem+torch.sigmoid(self.gap_scale)*gap
-            hs=self.cell_s(h[:,:self.sensor_nodes],u[:,:self.sensor_nodes],msg[:,:self.sensor_nodes])
-            hh=self.cell_h(h[:,self.sensor_nodes:motor_start],u[:,self.sensor_nodes:motor_start],msg[:,self.sensor_nodes:motor_start]) if motor_start>self.sensor_nodes else h[:,self.sensor_nodes:motor_start]
+            u[:,:sn,:]=s_all[:,t]
+            msg=torch.einsum('ij,bjd->bid',M,h)
+            hs=self.cell_s(h[:,:sn],u[:,:sn],msg[:,:sn])
+            hh=self.cell_h(h[:,sn:motor_start],u[:,sn:motor_start],msg[:,sn:motor_start]) if motor_start>sn else h[:,sn:motor_start]
             hm=self.cell_m(h[:,motor_start:],u[:,motor_start:],msg[:,motor_start:])
             h=torch.cat([hs,hh,hm],dim=1)
         with torch.no_grad():

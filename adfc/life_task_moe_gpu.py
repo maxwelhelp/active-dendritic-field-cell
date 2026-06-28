@@ -70,13 +70,14 @@ class CPGOscillator(nn.Module):
 class LifeTaskMoEPolicy(nn.Module):
     def __init__(self, nodes=32, dim=32, seq_len=32, motor_nodes=4, degree=5):
         super().__init__()
-        self.graph = GraphChannel(nodes, dim, FDIM, 4, motor_nodes, degree)
+        # Graph now reads out the full ACTIONS vector (was throttled to 2 scalars).
+        self.graph = GraphChannel(nodes, dim, FDIM, 4, motor_nodes, degree, out_dim=ACTIONS)
         self.order = PairwiseOrderBank(FDIM, dim)
         self.key = KeyReadBank(FDIM, dim)
         router_h = max(192, 2 * dim)
         action_h = max(128, dim)
         self.task_router = nn.Sequential(nn.LayerNorm(3 * FDIM), nn.Linear(3 * FDIM, router_h), nn.GELU(), nn.Linear(router_h, router_h), nn.GELU(), nn.Linear(router_h, 4))
-        self.graph_to_action = nn.Sequential(nn.Linear(2, action_h), nn.GELU(), nn.Linear(action_h, action_h), nn.GELU(), nn.Linear(action_h, ACTIONS))
+        # Graph contributes its direct ACTIONS readout plus a feature-based correction.
         self.graph_feat = nn.Sequential(nn.LayerNorm(3 * FDIM), nn.Linear(3 * FDIM, action_h), nn.GELU(), nn.Linear(action_h, action_h), nn.GELU())
         self.graph_feat_to_action = nn.Linear(action_h, ACTIONS)
         self.order_to_action = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, action_h), nn.GELU(), nn.Linear(action_h, ACTIONS))
@@ -91,8 +92,6 @@ class LifeTaskMoEPolicy(nn.Module):
             [0.25, 0.35, 0.40],
             [0.55, 0.25, 0.20],
         ], dtype=torch.float32))
-        self.cpg = CPGOscillator(8, ACTIONS)
-        self.cpg_scale = nn.Parameter(torch.tensor(0.20))
         self.last_stats = {}
 
     def encode_feat(self, x):
@@ -108,13 +107,12 @@ class LifeTaskMoEPolicy(nn.Module):
         ch = torch.softmax(self.channel_by_task, dim=-1)
         cw = tp @ ch
         mods = 0.60 * torch.tanh(self.mod_router(feat))
-        gl = self.graph_to_action(self.graph(x)) + self.graph_feat_to_action(self.graph_feat(feat))
+        gl = self.graph(x) + self.graph_feat_to_action(self.graph_feat(feat))
         ol = self.order_to_action(self.order(x))
         kl = self.key_to_action(self.key(x))
         self.last_z = self.contrast_proj(feat)
-        cpg_bias = torch.tanh(self.cpg_scale) * self.cpg().unsqueeze(0)
         mod_gain = 1.0 + 0.25 * mods[:,0:1] - 0.08 * mods[:,1:2]
-        logits = (cw[:, 0:1] * gl + cw[:, 1:2] * ol + cw[:, 2:3] * kl + cpg_bias) * mod_gain + self.mod_to_action(mods)
+        logits = (cw[:, 0:1] * gl + cw[:, 1:2] * ol + cw[:, 2:3] * kl) * mod_gain + self.mod_to_action(mods)
         with torch.no_grad():
             tm = tp.mean(0).detach().cpu()
             wm = cw.mean(0).detach().cpu()
@@ -124,7 +122,6 @@ class LifeTaskMoEPolicy(nn.Module):
                 "p_forage": float(tm[0]), "p_avoid": float(tm[1]), "p_pair": float(tm[2]), "p_rest": float(tm[3]),
                 "w_graph": float(wm[0]), "w_order": float(wm[1]), "w_key": float(wm[2]),
                 "order_abs": float(oa.cpu()), "key_entropy": float(ke.cpu()),
-                "cpg_scale": float(torch.tanh(self.cpg_scale).detach().cpu()),
                 "mod_da": float(mods[:,0].mean().detach().cpu()), "mod_5ht": float(mods[:,1].mean().detach().cpu()), "mod_oct": float(mods[:,2].mean().detach().cpu()), "mod_ach": float(mods[:,3].mean().detach().cpu()),
             }
             self.order.last_abs = oa.detach()
@@ -191,6 +188,23 @@ class LifeTaskMoEPolicy(nn.Module):
 class LifeGPUEnv:
     def __init__(self, args, device):
         self.args = args
+        # Backward-compatible ecology defaults for older run scripts/configs.
+        for _k, _v in {
+            "obstacles": 12,
+            "obstacle_radius_min": 24.0,
+            "obstacle_radius_max": 55.0,
+            "wiggle_drive": 3.0,
+            "transfer_efficiency": 0.90,
+            "mate_energy": 2.0,
+            "pair_threshold": 0.42,
+            "trait_cost": 0.003,
+            "obstacle_cost": 0.018,
+            "explore_std": 0.6,
+            "rl_lambda": 0.5,
+            "death_penalty": 12.0,
+        }.items():
+            if not hasattr(args, _k):
+                setattr(args, _k, _v)
         self.device = device
         self.N = args.agents
         self.F = args.food
@@ -225,6 +239,15 @@ class LifeGPUEnv:
         self.speed = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.6, 2.0)
         self.tool = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.4, 2.4)
         self.guard = torch.exp(torch.randn(self.N, device=device) * 0.20).clamp(0.2, 2.2)
+        self.reserve = self.size.clone().clamp(0.55, 2.4)
+        self.tool_eff = self.tool.clone().clamp(0.35, 2.8)
+        self.shell = self.guard.clone().clamp(0.20, 2.6)
+        self.length_trait = torch.exp(torch.randn(self.N, device=device) * 0.18).clamp(0.65, 1.75)
+        self.side_trait = torch.exp(torch.randn(self.N, device=device) * 0.25 - 0.20).clamp(0.25, 2.4)
+        self.O = int(args.obstacles)
+        self.obs_x = torch.rand(self.O, device=device) * self.W if self.O > 0 else torch.empty(0, device=device)
+        self.obs_y = torch.rand(self.O, device=device) * self.H if self.O > 0 else torch.empty(0, device=device)
+        self.obs_r = torch.rand(self.O, device=device) * (args.obstacle_radius_max - args.obstacle_radius_min) + args.obstacle_radius_min if self.O > 0 else torch.empty(0, device=device)
         self.food_x = torch.rand(self.F, device=device) * self.W
         self.food_y = torch.rand(self.F, device=device) * self.H
         self.food_alive = torch.ones(self.F, dtype=torch.bool, device=device)
@@ -293,7 +316,7 @@ class LifeGPUEnv:
         base[:, 7] = adx / self.args.sense_radius
         base[:, 8] = ady / self.args.sense_radius
         base[:, 9] = (1.0 - ad / self.args.sense_radius).clamp(0, 1)
-        base[:, 10] = self.size
+        base[:, 10] = self.reserve
         base[:, 11] = self.speed
         hunger = base[:, 1]
         stronger = (self.energy[aidx] > self.energy * 1.12).float()
@@ -326,26 +349,31 @@ class LifeGPUEnv:
         target = torch.zeros(self.N, ACTIONS, device=self.device) + 0.20
         target[:, 6] = 0.20
         hunger = 1.0 - (self.energy / self.args.hunger_energy).clamp(0, 1)
-        desired = torch.atan2(fvy + 0.55 * fdy / self.args.sense_radius, fvx + 0.55 * fdx / self.args.sense_radius)
-        diff = (desired - self.angle + math.pi) % (2 * math.pi) - math.pi
-        target[:, 0] = (diff < -0.05).float().clamp(0, 1)
-        target[:, 1] = (diff > 0.05).float().clamp(0, 1)
         energy_need = (1.0 - (self.energy / self.args.reproduce_energy).clamp(0, 1))
-        target[:, 2] = (0.38 + 0.55 * energy_need).clamp(0, 1)
         near_food = (1.0 - fd / self.args.sense_radius).clamp(0, 1)
-        target[:, 3] = near_food
-        stronger = (self.energy[aidx] > self.energy * 1.15).float()
-        near_agent = (1.0 - ad / self.args.sense_radius).clamp(0, 1)
-        target[:, 4] = ((1.0 - stronger) * near_agent * (0.20 + 0.60 * hunger)).clamp(0, 1)
+        # Desired heading toward food.
+        food_dir = torch.atan2(fvy + 0.55 * fdy / self.args.sense_radius, fvx + 0.55 * fdx / self.args.sense_radius)
+        # Desired heading toward opposite-sex partner.
         opposite_vx = torch.where(self.sex > 0.5, mvx, qvx)
         opposite_vy = torch.where(self.sex > 0.5, mvy, qvy)
         pair_dir = torch.atan2(opposite_vy, opposite_vx)
-        pair_diff = (pair_dir - self.angle + math.pi) % (2 * math.pi) - math.pi
-        can_pair = (self.energy > self.args.reproduce_energy).float()
-        target[:, 5] = can_pair * near_agent
+        can_pair = (self.energy > self.args.reproduce_energy * 0.78).float()
+        # Resolve a SINGLE desired heading per agent (mating overrides foraging when able to pair),
+        # so turn channels 0/1 never receive contradictory left+right targets simultaneously.
         pair_mask = can_pair > 0.5
-        target[pair_mask, 0] = torch.maximum(target[pair_mask, 0], (pair_diff[pair_mask] < -0.05).float())
-        target[pair_mask, 1] = torch.maximum(target[pair_mask, 1], (pair_diff[pair_mask] > 0.05).float())
+        desired = torch.where(pair_mask, pair_dir, food_dir)
+        diff = (desired - self.angle + math.pi) % (2 * math.pi) - math.pi
+        target[:, 0] = (diff < -0.05).float()
+        target[:, 1] = (diff > 0.05).float()
+        target[:, 2] = (0.38 + 0.55 * energy_need).clamp(0, 1)
+        target[:, 3] = near_food
+        stronger = (self.energy[aidx] > self.energy * 1.15).float()
+        near_agent = (1.0 - ad / self.args.sense_radius).clamp(0, 1)
+        prey_adv = (self.energy > self.energy[aidx] * 0.75).float()
+        food_scarce = (fd > self.args.sense_radius * 0.35).float()
+        target[:, 4] = (near_agent * prey_adv * (0.20 + 0.70 * energy_need + 0.35 * food_scarce)).clamp(0, 1)
+        opposite_near = (self.sex != self.sex[aidx]).float() * near_agent
+        target[:, 5] = (can_pair * opposite_near).clamp(0, 1)
         target[:, 6] = ((self.energy < self.args.hunger_energy * 0.55).float() * (1.0 - near_food)).clamp(0, 1)
         target[:, 7] = (0.45 + 0.45 * energy_need).clamp(0, 1)
         target[:, 8] = (0.20 + 0.45 * near_food).clamp(0, 1)
@@ -365,20 +393,28 @@ class LifeGPUEnv:
         cpg_agent_bias = self.args.agent_cpg_scale * torch.sin(self.agent_cpg_phase)
         base_logits = self.policy(xseq) + self.state_to_action(self.agent_state) + cpg_agent_bias
         logits = base_logits + self.agent_adapter
-        action = torch.sigmoid(logits)
+        # Continuous control with score-function exploration: perturb logits with Gaussian noise,
+        # execute the (continuous) sigmoid action, and carry the policy gradient through logits.
+        expl_std = self.args.explore_std
+        eps = torch.randn_like(logits) * expl_std
+        pre = (logits + eps).detach()                              # realized pre-activation (constant)
+        a_exec = torch.sigmoid(logits + eps)
+        # log N(pre; mean=logits, std). grad wrt logits = (pre-logits)/std^2 = REINFORCE score.
+        logp = (-0.5 * ((pre - logits) / max(expl_std, 1e-6)) ** 2).sum(dim=1)
+        action = a_exec.detach().clone()                             # what the body executes; clone avoids sharing version counter with sigmoid output
         target = self.teacher_targets(aux)
         hunger_now = (1.0 - (self.energy / self.args.reproduce_energy).clamp(0, 1)).detach()
         risk_now = (self.energy < self.args.hunger_energy * 1.10).float().detach()
         survival_weight = (1.0 + self.args.hunger_loss_weight * hunger_now + self.args.risk_loss_weight * risk_now).clamp(1.0, 5.0)
-        # Split credit assignment: shared trunk gets slower/global correction;
-        # per-agent adapter gets stronger local survival correction.
+        # Teacher imitation acts as a differentiable baseline / behavioural prior.
+        # Split credit assignment: shared trunk = slow global prior; adapter = local correction.
         action_shared = torch.sigmoid(base_logits + self.agent_adapter.detach())
         action_agent = torch.sigmoid(base_logits.detach() + self.agent_adapter)
         shared_mse = ((action_shared - target) ** 2).mean(dim=1)
         agent_mse = ((action_agent - target) ** 2).mean(dim=1)
         loss_shared = (shared_mse * survival_weight).mean()
         loss_adapter = (agent_mse * survival_weight).mean()
-        move_drive = (action[:, 2] + action[:, 7]).clamp(0, 2)
+        move_drive = (action_shared[:, 2] + action_shared[:, 7]).clamp(0, 2)
         wanted_drive = (0.85 + 0.75 * hunger_now).clamp(0, 1.6)
         stall_loss = F.relu(wanted_drive - move_drive).pow(2).mean()
         loss_policy = self.args.shared_loss_weight * loss_shared + self.args.adapter_loss_weight * loss_adapter + self.args.stall_lambda * stall_loss
@@ -390,27 +426,14 @@ class LifeGPUEnv:
         mean_cw = (tp_for_loss @ ch).mean(dim=0).clamp_min(1e-8)
         channel_entropy = -(mean_cw * mean_cw.log()).sum()
         balance_loss = F.relu(self.args.task_entropy_min - task_entropy).pow(2) + F.relu(self.args.channel_entropy_min - channel_entropy).pow(2)
-        loss_contrast = info_nce_by_task(self.policy.last_z, tid, self.args.contrast_tau) if self.policy.last_z is not None else action.new_tensor(0.0)
+        loss_contrast = info_nce_by_task(self.policy.last_z, tid, self.args.contrast_tau) if self.policy.last_z is not None else logits.new_tensor(0.0)
         stats = self.policy.stats()
-        detach_nonparam_tensor_state(self.policy)
         reg_shared = self.args.cost_lambda * action_shared.mean()
         reg_adapter = self.args.cost_lambda * action_agent.mean()
         reg = self.args.shared_loss_weight * reg_shared + self.args.adapter_loss_weight * reg_adapter
         connect_loss = self.args.connection_lambda * self.policy.connection_cost()
-        loss = loss_policy + self.args.task_lambda * loss_task + self.args.balance_lambda * balance_loss + self.args.contrast_lambda * loss_contrast + connect_loss + reg
-        self.opt.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
-        self.opt.step()
-        struct_changed = 0; alive_edges = 0; edge_density = 0.0
-        if self.args.structural_interval > 0 and (self.step_i % self.args.structural_interval == 0):
-            self.policy.ei_flip_prob = self.args.ei_flip_prob
-            struct_changed, alive_edges, edge_density = self.policy.structural_update(self.args.prune_frac, self.args.grow_frac)
-        else:
-            alive_edges = int((self.policy.graph.mask > 0).sum().item())
-            nmask = self.policy.graph.mask.shape[0]
-            edge_density = alive_edges / max(1, nmask * (nmask - 1))
-        action_env = action.detach()
+        # NOTE: backward is deferred to the end of step(), after the world produces per-agent reward.
+        action_env = action
         bend = (action_env[:, 1] - action_env[:, 0])
         wave = action_env[:, 2]
         mouth = action_env[:, 3]
@@ -426,6 +449,7 @@ class LifeGPUEnv:
         body_wave = torch.sin(self.phase) * wave * (0.35 + 1.15 * stiffness)
         self.angle = self.angle + self.args.turn_rate * (0.55 * bend + 0.45 * body_wave) * (1.0 - 0.40 * rest)
         k = torch.arange(self.seg_n, device=self.device).float()[None, :]
+        seg_len_eff = self.seg_len * (0.75 + 0.45 * self.length_trait)
         seg_phase = self.phase[:, None] - k * self.args.segment_phase_lag
         local_curve = torch.sin(seg_phase) * wave[:, None] * (0.25 + 1.20 * stiffness[:, None])
         seg_ang = self.angle[:, None] + local_curve
@@ -441,15 +465,27 @@ class LifeGPUEnv:
         latx = dx_raw - forward * tx; laty = dy_raw - forward * ty
         dx = forward * tx + self.args.lateral_slip * latx
         dy = forward * ty + self.args.lateral_slip * laty
-        head_x = (self.seg_x[:, 0] + dx) % self.W
-        head_y = (self.seg_y[:, 0] + dy) % self.H
+        side = self.args.wiggle_drive * wave * (0.35 + stiffness) * torch.sin(self.phase)
+        head_x = (self.seg_x[:, 0] + dx - torch.sin(self.angle) * side) % self.W
+        head_y = (self.seg_y[:, 0] + dy + torch.cos(self.angle) * side) % self.H
+        obstacle_hits = torch.zeros(self.N, device=self.device)
+        if self.O > 0:
+            odx = self.wrap_delta(head_x[:, None] - self.obs_x[None, :], self.W)
+            ody = self.wrap_delta(head_y[:, None] - self.obs_y[None, :], self.H)
+            od = torch.sqrt((odx * odx + ody * ody).clamp_min(1e-6))
+            pen = (self.obs_r[None, :] + 2.0 + self.reserve[:, None] - od).clamp_min(0.0)
+            obstacle_hits = pen.max(dim=1).values
+            push_x = (pen * odx / (od + 1e-6)).sum(dim=1)
+            push_y = (pen * ody / (od + 1e-6)).sum(dim=1)
+            head_x = (head_x + push_x) % self.W
+            head_y = (head_y + push_y) % self.H
         new_xs = [head_x]
         new_ys = [head_y]
         prev_x = head_x; prev_y = head_y
         for j in range(1, self.seg_n):
             # target joint follows previous segment at fixed length and learned curvature angle
-            px = (prev_x - torch.cos(seg_ang[:, j]) * self.seg_len) % self.W
-            py = (prev_y - torch.sin(seg_ang[:, j]) * self.seg_len) % self.H
+            px = (prev_x - torch.cos(seg_ang[:, j]) * seg_len_eff) % self.W
+            py = (prev_y - torch.sin(seg_ang[:, j]) * seg_len_eff) % self.H
             # friction/muscle inertia: segments do not instantly teleport to target
             oldx = self.seg_x[:, j]; oldy = self.seg_y[:, j]
             ddx = self.wrap_delta(px - oldx, self.W)
@@ -460,8 +496,8 @@ class LifeGPUEnv:
             vx = self.wrap_delta(nx - prev_x, self.W)
             vy = self.wrap_delta(ny - prev_y, self.H)
             d = torch.sqrt((vx * vx + vy * vy).clamp_min(1e-6))
-            nx = (prev_x + vx / d * self.seg_len) % self.W
-            ny = (prev_y + vy / d * self.seg_len) % self.H
+            nx = (prev_x + vx / d * seg_len_eff) % self.W
+            ny = (prev_y + vy / d * seg_len_eff) % self.H
             new_xs.append(nx); new_ys.append(ny)
             prev_x = nx; prev_y = ny
         self.seg_x = torch.stack(new_xs, dim=1).detach()
@@ -470,13 +506,21 @@ class LifeGPUEnv:
         self.y = self.seg_y[:, 0]
         seg_dx = self.wrap_delta(self.seg_x[:, 1:] - self.seg_x[:, :-1], self.W)
         seg_dy = self.wrap_delta(self.seg_y[:, 1:] - self.seg_y[:, :-1], self.H)
-        stretch_error = (torch.sqrt((seg_dx * seg_dx + seg_dy * seg_dy).clamp_min(1e-6)) - self.seg_len).abs().mean()
-        fidx, fdx, fdy, fd = self.nearest_food()
-        aidx, adx, ady, ad = self.nearest_agent()
-        near = fd < (5.0 + 8.0 * sh[:, 1] * self.tool)
-        gain = near.float() * mouth * self.args.food_energy
+        stretch_error = (torch.sqrt((seg_dx * seg_dx + seg_dy * seg_dy).clamp_min(1e-6)) - seg_len_eff[:, None]).abs().mean()
+        # Reuse the nearest-neighbour queries already computed in encode_obs_sequence (avoids a
+        # second N×F and N×N distance matrix per step).
+        fidx, fdx, fdy, fd, aidx, adx, ady, ad = aux[0], aux[1], aux[2], aux[3], aux[4], aux[5], aux[6], aux[7]
+        near = fd < (4.0 + 5.0 * sh[:, 1] * self.tool_eff)
+        # Dedup: each food item can be consumed by at most one agent (the highest-mouth claimant).
+        eat = near & self.food_alive[fidx]
+        claim = torch.where(eat, mouth, torch.full_like(mouth, -1.0))
+        best_per_food = torch.full((self.F,), -1.0, device=self.device)
+        best_per_food.scatter_reduce_(0, fidx, claim, reduce="amax", include_self=True)
+        winner = eat & (mouth >= best_per_food[fidx]) & (claim > -1.0)
+        gain = winner.float() * mouth * self.args.food_energy
         self.energy = self.energy + gain
-        self.food_alive[fidx[near]] = False
+        eaten_food = fidx[winner]
+        self.food_alive[eaten_food] = False
         dead_food = ~self.food_alive
         respawn = dead_food & (torch.rand(self.F, device=self.device) < self.args.food_spawn)
         rn = int(respawn.sum().item())
@@ -484,18 +528,23 @@ class LifeGPUEnv:
             self.food_x[respawn] = torch.rand(rn, device=self.device) * self.W
             self.food_y[respawn] = torch.rand(rn, device=self.device) * self.H
         self.food_alive[respawn] = True
-        near_a = ad < (6.0 + 7.0 * sh[:, 1] * self.tool)
-        transfer = near_a.float() * contact * self.args.transfer_energy * (0.45 + sh[:, 1]) / (1.0 + self.guard[aidx] * sh[aidx, 2])
+        near_a = ad < (5.0 + 8.0 * sh[:, 1] * self.tool_eff + 2.0 * self.side_trait)
+        contact_power = (0.25 + 1.45 * sh[:, 1]) * (0.45 + self.tool_eff) * (0.55 + 0.55 * self.side_trait)
+        protection = (0.75 + self.shell[aidx] * (0.35 + sh[aidx, 2])) * (0.80 + 0.25 * self.reserve[aidx])
+        transfer = near_a.float() * contact * self.args.transfer_energy * contact_power / protection
         transfer = torch.minimum(transfer, self.energy[aidx].clamp_min(0))
         contact_events = int((transfer > 1e-5).sum().detach().cpu())
         transfer_mean = float(transfer.mean().detach().cpu())
         drain = torch.zeros_like(self.energy)
         drain.scatter_add_(0, aidx, transfer)
-        self.energy = self.energy + transfer * 0.75 - drain
+        self.energy = self.energy + transfer * self.args.transfer_efficiency - drain
+        pending_child_adapter = None
+        pending_dead_adapter = None
         can_birth = (pair > 0.65) & (self.energy > self.args.reproduce_energy)
         parent_idx = can_birth.nonzero(as_tuple=False).flatten()
         max_births = max(1, int(self.N * self.args.birth_frac))
         births = min(int(parent_idx.numel()), max_births)
+        born_mask = torch.zeros(self.N, dtype=torch.bool, device=self.device)
         if births:
             self.births += births
             parent_pick = parent_idx[torch.randint(parent_idx.numel(), (births,), device=self.device)]
@@ -513,23 +562,33 @@ class LifeGPUEnv:
             self.tool[child_slots] = (self.tool[parent_pick] * torch.exp(torch.randn(births, device=self.device) * self.args.morph_mut_std)).clamp(0.4, 2.4)
             self.guard[child_slots] = (self.guard[parent_pick] * torch.exp(torch.randn(births, device=self.device) * self.args.morph_mut_std)).clamp(0.2, 2.2)
             self.agent_code[child_slots] = self.agent_code[parent_pick] + torch.randn(births, 4, device=self.device) * self.args.code_mut_std
-            self.agent_adapter.data[child_slots] = self.agent_adapter.data[parent_pick] + torch.randn(births, ACTIONS, device=self.device) * self.args.adapter_inherit_std
+            pending_child_adapter = (child_slots.detach().clone(), (self.agent_adapter.detach()[parent_pick] + torch.randn(births, ACTIONS, device=self.device) * self.args.adapter_inherit_std).detach().clone())
             kk = torch.arange(self.seg_n, device=self.device).float()[None, :]
             self.seg_x[child_slots] = (self.x[child_slots, None] - torch.cos(self.angle[child_slots])[:, None] * self.seg_len * kk) % self.W
             self.seg_y[child_slots] = (self.y[child_slots, None] - torch.sin(self.angle[child_slots])[:, None] * self.seg_len * kk) % self.H
-            self.obs_buffer[child_slots].zero_()
+            self.obs_buffer[child_slots] = 0.0
             self.agent_state[child_slots] = self.agent_state[parent_pick].detach() * 0.25
             self.agent_cpg_phase[child_slots] = (self.agent_cpg_phase[parent_pick] + torch.randn(births, ACTIONS, device=self.device) * 0.10) % math.tau
             self.agent_cpg_freq[child_slots] = (self.agent_cpg_freq[parent_pick] + torch.randn(births, ACTIONS, device=self.device) * 0.005).clamp(0.02, 0.12)
+            born_mask[child_slots] = True
+            born_mask[parent_pick] = True
         cost = self.args.metabolism + self.args.move_cost * speed
         cost = cost + self.args.shape_cost * (sh[:, 0] * self.speed + sh[:, 1] * self.tool + sh[:, 2] * self.guard + sh[:, 3])
         cost = cost + self.args.wiggle_cost * (wave.abs() + bend.abs() + phase_drive.abs() + stiffness.abs())
         cost = cost + self.args.stretch_cost * stretch_error
         cost = cost + self.args.neural_cost * action_env.abs().mean(dim=1)
+        cost = cost + self.args.obstacle_cost * obstacle_hits
         self.energy = self.energy - cost
         self.age = self.age + 1
         dead = (self.energy <= 0) | (self.age > self.args.max_age)
         dead_n = int(dead.sum().item())
+        # ---- Per-agent reward captured HERE: net energy change this step from the real world,
+        # before respawn rewrites energy (which would inject a fake +energy jump for revived agents).
+        reward_vec = (self.energy - old_energy)
+        # Big survival penalty for dying; exclude just-born/just-reproduced agents (their energy
+        # bookkeeping is dominated by birth transfers, not by their own policy this step).
+        reward_vec = reward_vec - dead.float() * self.args.death_penalty
+        valid_rl = (~born_mask)
         if dead_n:
             self.deaths += dead_n
             with torch.no_grad():
@@ -543,12 +602,49 @@ class LifeGPUEnv:
                 self.seg_x[dead] = (self.x[dead, None] - torch.cos(self.angle[dead])[:, None] * self.seg_len * kk) % self.W
                 self.seg_y[dead] = (self.y[dead, None] - torch.sin(self.angle[dead])[:, None] * self.seg_len * kk) % self.H
                 self.agent_code[dead] = torch.randn(dead_n, 4, device=self.device)
-                self.agent_adapter.data[dead].normal_(0.0, self.args.adapter_reset_std)
-                self.obs_buffer[dead].zero_()
-                self.agent_state[dead].zero_()
+                # advanced-index in-place .normal_/.zero_ writes to a temporary copy -> use assignment.
+                pending_dead_adapter = (dead.detach().clone(), (torch.randn(dead_n, ACTIONS, device=self.device) * self.args.adapter_reset_std).detach().clone())
+                self.obs_buffer[dead] = 0.0
+                self.agent_state[dead] = 0.0
                 self.agent_cpg_phase[dead] = torch.rand(dead_n, ACTIONS, device=self.device) * math.tau
                 self.agent_cpg_freq[dead] = torch.rand(dead_n, ACTIONS, device=self.device) * 0.03 + 0.05
-        reward = (self.energy - old_energy).mean() / max(1.0, self.args.food_energy)
+        # Normalize advantage across the living population (baseline = mean of valid rewards).
+        if valid_rl.any():
+            rv = reward_vec[valid_rl]
+            adv = torch.zeros_like(reward_vec)
+            adv[valid_rl] = (rv - rv.mean()) / (rv.std() + 1e-5)
+        else:
+            adv = torch.zeros_like(reward_vec)
+        # REINFORCE: push the policy toward exploration noise that produced above-baseline reward.
+        loss_rl = -(logp * adv.detach()).mean()
+        reward = reward_vec.mean() / max(1.0, self.args.food_energy)
+        # ---- Single combined objective, single backward (teacher prior + world reward) ----
+        loss = (self.args.rl_lambda * loss_rl
+                + loss_policy
+                + self.args.task_lambda * loss_task
+                + self.args.balance_lambda * balance_loss
+                + self.args.contrast_lambda * loss_contrast
+                + connect_loss + reg)
+        self.opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(list(self.policy.parameters()) + list(self.state_to_action.parameters()) + [self.agent_adapter], 1.0)
+        self.opt.step()
+        with torch.no_grad():
+            if pending_child_adapter is not None:
+                idx, val = pending_child_adapter
+                self.agent_adapter[idx] = val
+            if pending_dead_adapter is not None:
+                idx, val = pending_dead_adapter
+                self.agent_adapter[idx] = val
+        detach_nonparam_tensor_state(self.policy)
+        struct_changed = 0
+        if self.args.structural_interval > 0 and (self.step_i % self.args.structural_interval == 0):
+            self.policy.ei_flip_prob = self.args.ei_flip_prob
+            struct_changed, alive_edges, edge_density = self.policy.structural_update(self.args.prune_frac, self.args.grow_frac)
+        else:
+            alive_edges = int((self.policy.graph.mask > 0).sum().item())
+            nmask = self.policy.graph.mask.shape[0]
+            edge_density = alive_edges / max(1, nmask * (nmask - 1))
         self.x = self.x.detach(); self.y = self.y.detach(); self.angle = self.angle.detach(); self.phase = self.phase.detach()
         self.seg_x = self.seg_x.detach(); self.seg_y = self.seg_y.detach()
         self.agent_state = self.agent_state.detach()
@@ -558,6 +654,8 @@ class LifeGPUEnv:
             "step": self.step_i,
             "loss": float(loss.detach().cpu()),
             "loss_policy": float(loss_policy.detach().cpu()),
+            "loss_rl": float(loss_rl.detach().cpu()),
+            "adv_abs": float(adv.detach().abs().mean().cpu()),
             "loss_shared": float(loss_shared.detach().cpu()),
             "loss_adapter": float(loss_adapter.detach().cpu()),
             "loss_task": float(loss_task.detach().cpu()),
@@ -638,13 +736,22 @@ def main():
     p.add_argument("--segment-len", type=float, default=4.0)
     p.add_argument("--segment-phase-lag", type=float, default=0.85)
     p.add_argument("--segment-inertia", type=float, default=0.38)
-    p.add_argument("--lateral-slip", type=float, default=0.18)
-    p.add_argument("--transfer-energy", type=float, default=8.0)
+    p.add_argument("--lateral-slip", type=float, default=0.14)
+    p.add_argument("--wiggle-drive", type=float, default=3.0)
+    p.add_argument("--obstacles", type=int, default=12)
+    p.add_argument("--obstacle-radius-min", type=float, default=24.0)
+    p.add_argument("--obstacle-radius-max", type=float, default=55.0)
+    p.add_argument("--transfer-energy", type=float, default=18.0)
+    p.add_argument("--transfer-efficiency", type=float, default=0.90)
+    p.add_argument("--mate-energy", type=float, default=2.0)
+    p.add_argument("--pair-threshold", type=float, default=0.42)
     p.add_argument("--metabolism", type=float, default=0.035)
     p.add_argument("--move-cost", type=float, default=0.010)
     p.add_argument("--shape-cost", type=float, default=0.012)
     p.add_argument("--wiggle-cost", type=float, default=0.006)
-    p.add_argument("--stretch-cost", type=float, default=0.020)
+    p.add_argument("--stretch-cost", type=float, default=0.015)
+    p.add_argument("--trait-cost", type=float, default=0.003)
+    p.add_argument("--obstacle-cost", type=float, default=0.018)
     p.add_argument("--neural-cost", type=float, default=0.018)
     p.add_argument("--max-age", type=float, default=4000)
     p.add_argument("--lr", type=float, default=2e-3)
@@ -673,6 +780,9 @@ def main():
     p.add_argument("--hunger-loss-weight", type=float, default=1.5)
     p.add_argument("--risk-loss-weight", type=float, default=2.0)
     p.add_argument("--stall-lambda", type=float, default=0.20)
+    p.add_argument("--explore-std", type=float, default=0.6)
+    p.add_argument("--rl-lambda", type=float, default=0.5)
+    p.add_argument("--death-penalty", type=float, default=12.0)
     p.add_argument("--log-every", type=int, default=50)
     args = p.parse_args()
     dev = require_cuda()
