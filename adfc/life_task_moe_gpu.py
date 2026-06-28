@@ -52,6 +52,21 @@ def detach_nonparam_tensor_state(module: nn.Module):
                     pass
 
 
+class CPGOscillator(nn.Module):
+    def __init__(self, n_osc: int = 8, out_dim: int = ACTIONS):
+        super().__init__()
+        self.freq = nn.Parameter(torch.ones(n_osc) * 0.15)
+        self.phase0 = nn.Parameter(torch.linspace(0, math.pi, n_osc))
+        self.proj = nn.Linear(n_osc, out_dim)
+        self.register_buffer("tick", torch.zeros(()))
+
+    def forward(self):
+        with torch.no_grad():
+            self.tick += 1.0
+        phi = self.phase0 + self.tick * (0.03 + 0.22 * torch.sigmoid(self.freq))
+        return self.proj(torch.sin(phi))
+
+
 class LifeTaskMoEPolicy(nn.Module):
     def __init__(self, nodes=32, dim=32, seq_len=32, motor_nodes=4, degree=5):
         super().__init__()
@@ -74,6 +89,8 @@ class LifeTaskMoEPolicy(nn.Module):
             [0.25, 0.35, 0.40],
             [0.55, 0.25, 0.20],
         ], dtype=torch.float32))
+        self.cpg = CPGOscillator(8, ACTIONS)
+        self.cpg_scale = nn.Parameter(torch.tensor(0.20))
         self.last_stats = {}
 
     def encode_feat(self, x):
@@ -92,7 +109,8 @@ class LifeTaskMoEPolicy(nn.Module):
         ol = self.order_to_action(self.order(x))
         kl = self.key_to_action(self.key(x))
         self.last_z = self.contrast_proj(feat)
-        logits = cw[:, 0:1] * gl + cw[:, 1:2] * ol + cw[:, 2:3] * kl
+        cpg_bias = torch.tanh(self.cpg_scale) * self.cpg().unsqueeze(0)
+        logits = cw[:, 0:1] * gl + cw[:, 1:2] * ol + cw[:, 2:3] * kl + cpg_bias
         with torch.no_grad():
             tm = tp.mean(0).detach().cpu()
             wm = cw.mean(0).detach().cpu()
@@ -102,6 +120,7 @@ class LifeTaskMoEPolicy(nn.Module):
                 "p_forage": float(tm[0]), "p_avoid": float(tm[1]), "p_pair": float(tm[2]), "p_rest": float(tm[3]),
                 "w_graph": float(wm[0]), "w_order": float(wm[1]), "w_key": float(wm[2]),
                 "order_abs": float(oa.cpu()), "key_entropy": float(ke.cpu()),
+                "cpg_scale": float(torch.tanh(self.cpg_scale).detach().cpu()),
             }
             self.order.last_abs = oa.detach()
             self.key.last_entropy = ke.detach()
@@ -126,7 +145,11 @@ class LifeTaskMoEPolicy(nn.Module):
             return 0, active_count, active_count / max(1, n * (n - 1))
         # prune low-utility existing edges
         k_prune = max(1, int(active_count * prune_frac))
-        util = torch.abs(self.graph.A_logits.detach()) * mask
+        hebb = getattr(self.graph, '_hebb', None)
+        if hebb is not None:
+            util = hebb.detach().to(mask.device) * mask
+        else:
+            util = torch.abs(self.graph.A_logits.detach()) * mask
         vals = util[active]
         if vals.numel() > 0:
             kth = torch.topk(vals, min(k_prune, vals.numel()), largest=False).values.max()

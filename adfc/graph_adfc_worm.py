@@ -128,12 +128,12 @@ TASKS = {"route": make_route, "order": make_order, "kv": make_kv}
 # ------------------------------- model -------------------------------
 
 class SharedADFCCell(nn.Module):
-    def __init__(self, d: int):
+    def __init__(self, d: int, n_nodes: int | None = None):
         super().__init__()
         self.norm = nn.LayerNorm(d)
         self.inp = nn.Linear(d, 3 * d)
         self.msg = nn.Linear(d, 3 * d, bias=False)
-        self.decay = nn.Parameter(torch.tensor(0.55))
+        self.decay = nn.Parameter(torch.full((n_nodes,), 0.55) if n_nodes is not None else torch.tensor(0.55))
 
     def forward(self, h: torch.Tensor, u: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
         z = self.norm(h)
@@ -143,6 +143,8 @@ class SharedADFCCell(nn.Module):
         plateau = torch.sigmoid(plateau)
         cand = torch.tanh(cand + 0.25 * z)
         slow = torch.sigmoid(self.decay)
+        if slow.ndim == 1:
+            slow = slow[None, :, None]
         new = slow * h + (1.0 - slow) * (plateau * cand)
         return (1.0 - gate) * h + gate * new
 
