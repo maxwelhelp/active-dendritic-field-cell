@@ -35,7 +35,7 @@ def dist(dx,dy): return math.sqrt(dx*dx+dy*dy)
 
 
 class MicroBrain:
-    def __init__(self, sensor_dim=26, nodes=28, basis_dim=8, action_dim=10, rng=None):
+    def __init__(self, sensor_dim=26, nodes=28, basis_dim=8, action_dim=14, rng=None):
         self.rng = rng or np.random.default_rng()
         self.sensor_dim=sensor_dim; self.nodes=nodes; self.basis_dim=basis_dim; self.action_dim=action_dim
         self.W_in=self.rng.normal(0,0.35,(sensor_dim,nodes)).astype(np.float32)
@@ -74,6 +74,10 @@ class MicroBrain:
             'extend': float(sigmoid(raw[7])),
             'charge': float(sigmoid(raw[8])),
             'mouth': float(sigmoid(raw[9])),
+            'shape_speed': float(sigmoid(raw[10])),
+            'shape_tool': float(sigmoid(raw[11])),
+            'shape_guard': float(sigmoid(raw[12])),
+            'shape_sense': float(sigmoid(raw[13])),
         }
     def cost(self, neural_cost, connection_cost):
         return neural_cost*self.last_activity + connection_cost*self.last_alive_frac
@@ -120,6 +124,7 @@ class Agent:
     id: int; x: float; y: float; angle: float; sex: int; brain: MicroBrain; morph: Morphology
     energy: float=60.0; age:int=0; max_age:int=2600; alive:bool=True; cooldown:int=0
     vx:float=0.0; vy:float=0.0; kills:int=0; children:int=0; last_actions:dict=None
+    shape_speed:float=0.25; shape_tool:float=0.25; shape_guard:float=0.25; shape_sense:float=0.25; last_reward:float=0.0; last_gain:float=0.0
 
 
 class World:
@@ -157,7 +162,7 @@ class World:
             if d<bd: bd=d; best=(b,dx,dy,math.sqrt(d))
         return best
     def sense(self,a):
-        obs=np.zeros(26,dtype=np.float32); sr=self.a.sense_radius*a.morph.sense
+        obs=np.zeros(26,dtype=np.float32); sr=self.a.sense_radius*a.morph.sense*(0.55+1.30*getattr(a,'shape_sense',0.25))
         obs[0]=a.energy/max(1,self.a.reproduce_energy); obs[1]=1-min(1,a.energy/max(1,self.a.hunger_energy)); obs[2]=a.age/max(1,a.max_age)
         obs[3]=1 if a.sex else -1; obs[4]=math.cos(a.angle); obs[5]=math.sin(a.angle)
         obs[6]=a.morph.size; obs[7]=a.morph.speed; obs[8]=a.morph.bite_force; obs[9]=a.morph.bite_radius; obs[10]=a.morph.armor; obs[11]=a.morph.sense
@@ -187,7 +192,7 @@ class World:
         if self.py.random()<self.a.prey_spawn: self.spawn_prey()
     def prey_eat(self,a,actions):
         if actions['mouth']<0.45: return 0
-        gain=0; reach=5*a.morph.size+4*a.morph.bite_radius*(0.6+actions['extend'])
+        gain=0; reach=5*a.morph.size+4*a.morph.bite_radius*(0.6+actions['extend'])*(0.55+1.45*getattr(a,'shape_tool',0.25))
         for p in list(self.prey):
             dx=wrap_delta(p.x-a.x,self.W); dy=wrap_delta(p.y-a.y,self.H); d=dist(dx,dy)
             if d<reach:
@@ -200,10 +205,10 @@ class World:
         ne=self.nearest_agent(a,False)
         if not ne: return 0
         b,dx,dy,d=ne
-        reach=self.a.base_attack_radius*a.morph.bite_radius*(0.6+actions['extend']) + 2*a.morph.size
+        reach=self.a.base_attack_radius*a.morph.bite_radius*(0.6+actions['extend'])*(0.55+1.45*getattr(a,'shape_tool',0.25)) + 2*a.morph.size
         if d>reach: return 0
-        force=self.a.base_attack_force*a.morph.bite_force*actions['bite']*(0.7+actions['charge'])
-        defense=1.0+self.a.armor_scale*b.morph.armor*(0.4+(b.last_actions or {}).get('shield',0.0))
+        force=self.a.base_attack_force*a.morph.bite_force*actions['bite']*(0.7+actions['charge'])*(0.45+1.65*getattr(a,'shape_tool',0.25))
+        defense=1.0+self.a.armor_scale*b.morph.armor*(0.4+(b.last_actions or {}).get('shield',0.0))*(0.55+1.45*getattr(b,'shape_guard',0.25))
         damage=force/defense
         a.energy -= self.a.attack_cost*(0.5+a.morph.bite_force+actions['charge'])
         steal=min(b.energy, damage*self.a.steal_per_damage)
@@ -224,21 +229,31 @@ class World:
         self.spawn_agent(brain,morph,a.x+self.py.uniform(-8,8),a.y+self.py.uniform(-8,8),child_energy); a.cooldown=b.cooldown=self.a.reproduce_cooldown
         a.children+=1; b.children+=1; self.births+=1
     def update_agent(self,a):
-        before=a.energy; obs=self.sense(a); act=a.brain.step(obs); a.last_actions=act
+        before=a.energy
+        gp0=self.nearest_prey(a); gd0=gp0[3] if gp0 else self.a.sense_radius
+        ga0=self.nearest_agent(a,False); ad0=ga0[3] if ga0 else self.a.sense_radius
+        obs=self.sense(a); act=a.brain.step(obs); a.last_actions=act
+        sh=np.array([act['shape_speed'],act['shape_tool'],act['shape_guard'],act['shape_sense']],dtype=np.float32)+1e-3
+        sh=sh/sh.sum()
+        a.shape_speed=float(sh[0]); a.shape_tool=float(sh[1]); a.shape_guard=float(sh[2]); a.shape_sense=float(sh[3])
         rest=act['rest']; sprint=act['sprint']; shield=act['shield']; extend=act['extend']; charge=act['charge']
         active=1-0.50*rest
-        speed=self.a.max_speed*a.morph.speed*(0.65+act['thrust'])*(1+0.9*sprint)*active/(a.morph.size**0.35)
+        speed=self.a.max_speed*a.morph.speed*(0.45+1.55*a.shape_speed)*(0.65+act['thrust'])*(1+0.9*sprint)*active/(a.morph.size**0.35)
         a.angle += act['turn']*self.a.turn_rate*active
         a.vx=0.80*a.vx+math.cos(a.angle)*speed; a.vy=0.80*a.vy+math.sin(a.angle)*speed
         a.x=(a.x+a.vx)%self.W; a.y=(a.y+a.vy)%self.H
         prey_gain=self.prey_eat(a,act); steal=self.attack(a,act); self.mate(a,act)
-        tool_cost=self.a.tool_cost*(sprint*a.morph.speed + shield*a.morph.armor + extend*a.morph.bite_radius + charge*a.morph.bite_force)
+        tool_cost=self.a.tool_cost*(sprint*a.morph.speed + shield*a.morph.armor*(0.5+a.shape_guard) + extend*a.morph.bite_radius*(0.5+a.shape_tool) + charge*a.morph.bite_force*(0.5+a.shape_tool)) + self.a.form_cost*(a.shape_speed*a.morph.speed + a.shape_tool*(a.morph.bite_force+a.morph.bite_radius) + a.shape_guard*a.morph.armor + a.shape_sense*a.morph.sense)
         move_cost=self.a.move_cost*(abs(a.vx)+abs(a.vy))*a.morph.size
         a.energy -= self.a.metabolism + a.morph.maintenance_cost() + move_cost + tool_cost + a.brain.cost(self.a.neural_cost,self.a.connection_cost)*active
         if a.energy<self.a.hunger_energy: a.energy-=self.a.hunger_penalty
         a.energy=min(a.energy,self.a.energy_cap); a.age+=1
         if a.cooldown>0: a.cooldown-=1
-        reward=(a.energy-before)/max(1,self.a.prey_energy)
+        gp1=self.nearest_prey(a); gd1=gp1[3] if gp1 else self.a.sense_radius
+        ga1=self.nearest_agent(a,False); ad1=ga1[3] if ga1 else self.a.sense_radius
+        progress=((gd0-gd1)+(ad0-ad1)*0.35)/max(1.0,self.a.sense_radius)
+        reward=(a.energy-before)/max(1,self.a.prey_energy) + self.a.progress_reward*progress
+        a.last_reward=float(reward); a.last_gain=float(max(0.0,a.energy-before))
         a.brain.plasticity(reward,self.a.plastic_lr,self.a.plastic_cost)
         if a.energy<=0 or a.age>a.max_age: a.alive=False
     def step(self):
@@ -253,7 +268,7 @@ class World:
         def mean(attr, default=0): return float(np.mean([attr(a) for a in A])) if A else default
         return dict(step=self.step_i,agents=len(A),prey=len(self.prey),births=self.births,deaths=self.deaths,kills=self.kills,
             energy_mean=mean(lambda a:a.energy),energy_max=float(max([a.energy for a in A],default=0)),activity_mean=mean(lambda a:a.brain.last_activity),alive_edges_mean=mean(lambda a:a.brain.last_alive_frac),generation_max=int(max([a.brain.generation for a in A],default=0)),
-            size_mean=mean(lambda a:a.morph.size),speed_mean=mean(lambda a:a.morph.speed),force_mean=mean(lambda a:a.morph.bite_force),radius_mean=mean(lambda a:a.morph.bite_radius),armor_mean=mean(lambda a:a.morph.armor),sense_mean=mean(lambda a:a.morph.sense))
+            size_mean=mean(lambda a:a.morph.size),speed_mean=mean(lambda a:a.morph.speed),force_mean=mean(lambda a:a.morph.bite_force),radius_mean=mean(lambda a:a.morph.bite_radius),armor_mean=mean(lambda a:a.morph.armor),sense_mean=mean(lambda a:a.morph.sense),reward_mean=mean(lambda a:a.last_reward),gain_mean=mean(lambda a:a.last_gain),shape_speed_mean=mean(lambda a:a.shape_speed),shape_tool_mean=mean(lambda a:a.shape_tool),shape_guard_mean=mean(lambda a:a.shape_guard),shape_sense_mean=mean(lambda a:a.shape_sense),act_move_mean=mean(lambda a:(a.last_actions or {}).get('thrust',0.0)),act_tool_mean=mean(lambda a:(a.last_actions or {}).get('mouth',0.0)),act_pair_mean=mean(lambda a:(a.last_actions or {}).get('mate',0.0)),act_rest_mean=mean(lambda a:(a.last_actions or {}).get('rest',0.0)))
 
 
 def write_csv(path,rows):
@@ -307,6 +322,6 @@ def run_pygame(w,args):
     write_csv(args.csv,rows); pygame.quit()
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--seed',type=int,default=7); p.add_argument('--width',type=int,default=1000); p.add_argument('--height',type=int,default=700); p.add_argument('--steps',type=int,default=25000); p.add_argument('--agents',type=int,default=55); p.add_argument('--min-agents',type=int,default=12); p.add_argument('--initial-energy',type=float,default=75); p.add_argument('--energy-cap',type=float,default=180); p.add_argument('--hunger-energy',type=float,default=30); p.add_argument('--metabolism',type=float,default=0.024); p.add_argument('--hunger-penalty',type=float,default=0.022); p.add_argument('--move-cost',type=float,default=0.014); p.add_argument('--tool-cost',type=float,default=0.015); p.add_argument('--neural-cost',type=float,default=0.035); p.add_argument('--connection-cost',type=float,default=0.012); p.add_argument('--plastic-lr',type=float,default=0.004); p.add_argument('--plastic-cost',type=float,default=0.0012); p.add_argument('--prey-init',type=int,default=45); p.add_argument('--prey-max',type=int,default=80); p.add_argument('--prey-spawn',type=float,default=0.075); p.add_argument('--prey-energy',type=float,default=18); p.add_argument('--prey-ttl',type=int,default=900); p.add_argument('--prey-speed',type=float,default=0.18); p.add_argument('--prey-sense',type=float,default=110); p.add_argument('--prey-bite',type=float,default=5); p.add_argument('--attack-min-energy',type=float,default=12); p.add_argument('--base-attack-radius',type=float,default=8); p.add_argument('--base-attack-force',type=float,default=5.0); p.add_argument('--attack-cost',type=float,default=1.2); p.add_argument('--steal-per-damage',type=float,default=5.5); p.add_argument('--armor-scale',type=float,default=0.8); p.add_argument('--cannibal-eff',type=float,default=0.90); p.add_argument('--reproduce-energy',type=float,default=78); p.add_argument('--child-energy',type=float,default=28); p.add_argument('--reproduce-cooldown',type=int,default=220); p.add_argument('--mate-radius',type=float,default=18); p.add_argument('--mutation',type=float,default=0.035); p.add_argument('--morph-mutation',type=float,default=0.07); p.add_argument('--max-age',type=int,default=2600); p.add_argument('--sense-radius',type=float,default=190); p.add_argument('--turn-rate',type=float,default=0.30); p.add_argument('--max-speed',type=float,default=1.8); p.add_argument('--visual',choices=['pygame','none'],default='pygame'); p.add_argument('--fps',type=int,default=45); p.add_argument('--sim-steps-per-frame',type=int,default=2); p.add_argument('--log-every',type=int,default=100); p.add_argument('--csv',default='results/014_predator_morph/stats.csv')
+    p=argparse.ArgumentParser(); p.add_argument('--seed',type=int,default=7); p.add_argument('--width',type=int,default=1000); p.add_argument('--height',type=int,default=700); p.add_argument('--steps',type=int,default=25000); p.add_argument('--agents',type=int,default=55); p.add_argument('--min-agents',type=int,default=12); p.add_argument('--initial-energy',type=float,default=75); p.add_argument('--energy-cap',type=float,default=180); p.add_argument('--hunger-energy',type=float,default=30); p.add_argument('--metabolism',type=float,default=0.024); p.add_argument('--hunger-penalty',type=float,default=0.022); p.add_argument('--move-cost',type=float,default=0.014); p.add_argument('--tool-cost',type=float,default=0.015); p.add_argument('--form-cost',type=float,default=0.010); p.add_argument('--neural-cost',type=float,default=0.035); p.add_argument('--connection-cost',type=float,default=0.012); p.add_argument('--plastic-lr',type=float,default=0.004); p.add_argument('--progress-reward',type=float,default=0.35); p.add_argument('--plastic-cost',type=float,default=0.0012); p.add_argument('--prey-init',type=int,default=45); p.add_argument('--prey-max',type=int,default=80); p.add_argument('--prey-spawn',type=float,default=0.075); p.add_argument('--prey-energy',type=float,default=18); p.add_argument('--prey-ttl',type=int,default=900); p.add_argument('--prey-speed',type=float,default=0.18); p.add_argument('--prey-sense',type=float,default=110); p.add_argument('--prey-bite',type=float,default=5); p.add_argument('--attack-min-energy',type=float,default=12); p.add_argument('--base-attack-radius',type=float,default=8); p.add_argument('--base-attack-force',type=float,default=5.0); p.add_argument('--attack-cost',type=float,default=1.2); p.add_argument('--steal-per-damage',type=float,default=5.5); p.add_argument('--armor-scale',type=float,default=0.8); p.add_argument('--cannibal-eff',type=float,default=0.90); p.add_argument('--reproduce-energy',type=float,default=78); p.add_argument('--child-energy',type=float,default=28); p.add_argument('--reproduce-cooldown',type=int,default=220); p.add_argument('--mate-radius',type=float,default=18); p.add_argument('--mutation',type=float,default=0.035); p.add_argument('--morph-mutation',type=float,default=0.07); p.add_argument('--max-age',type=int,default=2600); p.add_argument('--sense-radius',type=float,default=190); p.add_argument('--turn-rate',type=float,default=0.30); p.add_argument('--max-speed',type=float,default=1.8); p.add_argument('--visual',choices=['pygame','none'],default='pygame'); p.add_argument('--fps',type=int,default=45); p.add_argument('--sim-steps-per-frame',type=int,default=2); p.add_argument('--log-every',type=int,default=100); p.add_argument('--csv',default='results/014_predator_morph/stats.csv')
     args=p.parse_args(); random.seed(args.seed); np.random.seed(args.seed); w=World(args); run_pygame(w,args) if args.visual=='pygame' else run_headless(w,args)
 if __name__=='__main__': main()
