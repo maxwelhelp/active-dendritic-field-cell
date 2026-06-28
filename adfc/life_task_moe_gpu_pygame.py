@@ -109,7 +109,11 @@ def main():
                 cc=(int(col[0]*shade),int(col[1]*shade),int(col[2]*shade))
                 pygame.draw.circle(screen, cc, (int(px), int(py)), rr)
                 if k > 0:
-                    pygame.draw.line(screen, cc, (int(xs[k-1]), int(ys[k-1])), (int(px), int(py)), 1)
+                    # Do not draw across toroidal wrap boundary.
+                    ddx = abs(float(px) - float(xs[k-1]))
+                    ddy = abs(float(py) - float(ys[k-1]))
+                    if ddx < args.segment_len * 4.0 and ddy < args.segment_len * 4.0:
+                        pygame.draw.line(screen, cc, (int(xs[k-1]), int(ys[k-1])), (int(px), int(py)), 1)
             nx=x+math.cos(ang)*3
             ny=y+math.sin(ang)*3
             pygame.draw.circle(screen,(245,245,245),(int(nx),int(ny)),1)
