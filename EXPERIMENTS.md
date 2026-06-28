@@ -40,3 +40,5 @@ metabolic routing adds survival gates and resource pressure as a first step towa
 ## Current best result
 
 - [`results/graph_typed_bank_full/`](results/graph_typed_bank_full/)
+
+| 015 | [Real GPU TaskMoE/ADFC Life](experiments/015_real_gpu_task_moe_life.md) | imports GraphChannel/Order/Key; CUDA training + pygame wrapper | verified 200 steps; loss falls 0.1334 -> 0.0607 |
